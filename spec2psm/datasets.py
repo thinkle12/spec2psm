@@ -80,9 +80,14 @@ class Spec2PSMDataset(Dataset):
             mz = np.array([mz[i] for i in sorted_indices])
 
         # Apply z-score normalization
+        # if self.normalize:
+        #     intensities = (intensities - self.intensity_mean) / self.intensity_std
+        #     mz = (mz - self.mz_mean) / self.mz_std
+
+        # l2 norm
         if self.normalize:
-            intensities = (intensities - self.intensity_mean) / self.intensity_std
-            mz = (mz - self.mz_mean) / self.mz_std
+            intensities = self.l2_normalize(intensities)
+            mz = self.l2_normalize(mz)
 
         # Pad mz and intensity to length 100
         if len(intensities) < 100:
@@ -93,7 +98,9 @@ class Spec2PSMDataset(Dataset):
         intensities = torch.tensor(intensities, dtype=torch.float32)
         mz = torch.tensor(mz, dtype=torch.float32)
         if self.normalize:
-            precursor_mass = torch.tensor((row['precursor_mz_spectra'] - self.precursor_mass_mean) / self.precursor_mass_std, dtype=torch.float32)
+            # precursor_mass = torch.tensor((row['precursor_mz_spectra'] - self.precursor_mass_mean) / self.precursor_mass_std, dtype=torch.float32)
+            precursor_mass = torch.tensor(row['precursor_mz_spectra'] / 2000, dtype=torch.float32)
+
         else:
             precursor_mass = torch.tensor(row['precursor_mz_spectra'], dtype=torch.float32)
         charge = torch.tensor(row['charge_spectra'], dtype=torch.float32)
@@ -114,6 +121,10 @@ class Spec2PSMDataset(Dataset):
         features = torch.stack([mz, intensities,
                                 torch.tensor(precursor_mass_padded, dtype=torch.float32), torch.tensor(charge_padded, dtype=torch.float32)], dim=-1)
 
+        mz_sorted_indices = torch.argsort(features[:, 0])  # Sort by the first column (mz)
+
+        sorted_features = features[mz_sorted_indices]
+
         # Extract target (Y) from the row
         peptide = row['peptide_string_spec2psm']  # Assuming 'peptide' is the target column
         # Convert peptide sequence to a suitable representation, integer encoded
@@ -123,7 +134,7 @@ class Spec2PSMDataset(Dataset):
         padded_target = torch.tensor(pad_with_zeros(target, target_length=self.max_peptide_length))
 
         # Convert the tensors to the correct types...
-        features_32 = features.clone().detach().float()
+        features_32 = sorted_features.clone().detach().float()
         padded_target_long = padded_target.clone().detach().long()
 
         return features_32, padded_target_long
@@ -136,3 +147,10 @@ class Spec2PSMDataset(Dataset):
                 row_group_idx = (idx - cumulative_idx * self.row_group_size) // self.row_group_size
                 return i, row_group_idx
             cumulative_idx = cumulative_groups
+
+    def l2_normalize(self, features):
+        # Compute the L2 norm for each row
+        norm = np.linalg.norm(features, ord=2, axis=0, keepdims=True)  # Calculate the L2 norm along the rows
+        # Normalize the features
+        normalized_features = features / norm
+        return normalized_features

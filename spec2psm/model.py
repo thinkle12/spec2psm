@@ -3,9 +3,27 @@
 # TODO write the model here...
 import torch
 import torch.nn as nn
+import math
+
+class SinusoidalPositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        super(SinusoidalPositionalEncoding, self).__init__()
+        # Create a matrix of [max_len, d_model]
+        self.encoding = torch.zeros(max_len, d_model)
+
+        for pos in range(max_len):
+            for i in range(0, d_model, 2):
+                self.encoding[pos, i] = math.sin(pos / (10000 ** (i / d_model)))
+                if i + 1 < d_model:
+                    self.encoding[pos, i + 1] = math.cos(pos / (10000 ** (i / d_model)))
+
+        self.encoding = self.encoding.unsqueeze(0)  # Add batch dimension
+
+    def forward(self, x):
+        return x + self.encoding[:, :x.size(1), :].to(x.device)
 
 class Spec2Psm(nn.Module):
-    def __init__(self, vocab_size, d_model, max_seq_len, nhead, num_encoder_layers, num_decoder_layers):
+    def __init__(self, vocab_size, d_model, max_seq_len, nhead, num_encoder_layers, num_decoder_layers, ff_dim, dropout=0.2):
 
         super(Spec2Psm, self).__init__()
 
@@ -13,21 +31,24 @@ class Spec2Psm(nn.Module):
         self.transformer = nn.Transformer(d_model=d_model, nhead=nhead,
                                           num_encoder_layers=num_encoder_layers,
                                           num_decoder_layers=num_decoder_layers,
-                                          batch_first=True)
+                                          batch_first=True,
+                                          dim_feedforward=ff_dim,
+                                          dropout=dropout)
 
         # Embedding layers for input spectra and output peptide
         self.input_embedding = nn.Linear(4, d_model).to(torch.float32)  # Assuming 4 features in spectra
-        self.output_embedding = nn.Embedding(vocab_size, d_model).to(torch.float32)
+        self.output_embedding = nn.Embedding(vocab_size, d_model).to(torch.float32) # Assuming vocab size
+
+        # Layer normalization for input embeddings
+        self.layer_norm_src = nn.LayerNorm(d_model)
 
         # Positional embeddings
-        self.positional_embedding = nn.Embedding(max_seq_len, d_model)
+        # self.positional_embedding_peptide = nn.Embedding(max_seq_len, d_model)
+        # self.positional_embedding_spectra = nn.Embedding(100, d_model)
 
-        # Additional dense layer between transformer blocks
-        self.dense = nn.Sequential(
-            nn.Linear(d_model, d_model),  # Example dense layer with same input/output dims
-            nn.ReLU(),
-            nn.Dropout(0.1)  # Add dropout to prevent overfitting
-        )
+        # Positional encoding layers
+        self.positional_encoding_peptide = SinusoidalPositionalEncoding(d_model, max_seq_len)
+        self.positional_encoding_spectra = SinusoidalPositionalEncoding(d_model, 100)
 
         # Output linear layer to predict peptide sequence
         self.fc_out = nn.Linear(d_model, vocab_size)
@@ -45,20 +66,20 @@ class Spec2Psm(nn.Module):
         # src: (batch_size, seq_len, 4)  --> spectra input
         # tgt: (batch_size, tgt_len) --> peptide sequence output (as indices)
 
-        # Apply input embeddings
+        # Apply input embeddings for spectra
         src = self.input_embedding(src)
 
-        # Generate positional indices and add positional embeddings for source
-        batch_size, seq_len, _ = src.size()
-        src_positions = torch.arange(0, seq_len, device=src.device).unsqueeze(0).repeat(batch_size, 1)
+        # Apply layer normalization for the source embeddings
+        src = self.layer_norm_src(src)
+
+        # Apply sinusoidal positional encoding for spectra embedding
+        src = self.positional_encoding_spectra(src)
 
         # Apply output embeddings for peptide sequence
         tgt = self.output_embedding(tgt)
 
-        # Add positional embeddings to the target (peptide sequence)
-        tgt_len = tgt.size(1)
-        tgt_positions = torch.arange(0, tgt_len, device=tgt.device).unsqueeze(0).repeat(batch_size, 1)
-        tgt = tgt + self.positional_embedding(tgt_positions)
+        # Apply sinusoidal positional encoding for target (peptide sequence)
+        tgt = self.positional_encoding_peptide(tgt)
 
         # Pass the input through the transformer layers
         output = self.transformer(src, tgt,
@@ -68,7 +89,7 @@ class Spec2Psm(nn.Module):
                                   tgt_mask=tgt_mask)
 
         # Apply the dense layer between transformer blocks
-        output = self.dense(output)  # This is the extra dense layer
+        # output = self.dense(output)  # This is the extra dense layer
 
         # Final linear layer to predict the next token in the peptide sequence
         output = self.fc_out(output)
