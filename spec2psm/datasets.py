@@ -48,7 +48,7 @@ class Spec2PSMDataset(Dataset):
 
     def __len__(self):
         # Return the total number of rows across all files
-        return 1900000
+        return sum([self.row_group_size * x - self.row_group_size for x in self.row_group_sizes])
 
     def __getitem__(self, idx):
         # Determine which file and row group to read from
