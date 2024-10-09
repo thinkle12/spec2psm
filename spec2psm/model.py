@@ -32,6 +32,15 @@ class Spec2Psm(nn.Module):
         # Output linear layer to predict peptide sequence
         self.fc_out = nn.Linear(d_model, vocab_size)
 
+        # Call weight initialization function
+        self._init_weights()
+
+    def _init_weights(self):
+        # Initialize all linear layers with Xavier uniform
+        for layer in self.modules():
+            if isinstance(layer, nn.Linear):
+                torch.nn.init.xavier_uniform_(layer.weight)
+
     def forward(self, src, tgt, src_padding_mask, tgt_padding_mask, tgt_mask, training=True):
         # src: (batch_size, seq_len, 4)  --> spectra input
         # tgt: (batch_size, tgt_len) --> peptide sequence output (as indices)
