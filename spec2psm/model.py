@@ -75,16 +75,16 @@ class Spec2Psm(nn.Module):
         # Encode the precursors (charge and m/z)
         masses = self.mz_encoder(precursors[:, None, 0])  # Assuming precursors contains m/z in the first column
         charges = self.charge_encoder(precursors[:, 1].int())  # Adjusting charge indices
-        # latent_spectra = self.latent_spectrum.expand(src.shape[0], -1, -1)
+        latent_spectra = self.latent_spectrum.expand(src.shape[0], -1, -1)
 
-        # Below is a learned latent representation by binned precursor mz AND charge
-        precursor_buckets = ((precursors[:, None, 0]) * 10).long()  # Adjust for bucketing
-        precursor_buckets = precursor_buckets.clamp(0,self.max_precursor_mass*10 - 1)  # Ensure we stay within valid bucket range
-        # Combine charge states and precursor bucket indices to get a unique index
-        latent_indices = precursors[:, 1] * precursor_buckets  # This assumes charge states can overlap with buckets directly
-        latent_indices = latent_indices.long()
-        # Get the latent spectrum representation
-        latent_spectra = self.latent_spectrum_granular(latent_indices)
+        # # Below is a learned latent representation by binned precursor mz AND charge
+        # precursor_buckets = ((precursors[:, None, 0]) * 10).long()  # Adjust for bucketing
+        # precursor_buckets = precursor_buckets.clamp(0,self.max_precursor_mass*10 - 1)  # Ensure we stay within valid bucket range
+        # # Combine charge states and precursor bucket indices to get a unique index
+        # latent_indices = precursors[:, 1] * precursor_buckets  # This assumes charge states can overlap with buckets directly
+        # latent_indices = latent_indices.long()
+        # # Get the latent spectrum representation
+        # latent_spectra = self.latent_spectrum_granular(latent_indices)
 
         precursors_encoded = torch.cat((latent_spectra, charges.unsqueeze(1), masses), dim=1)
         # Shape: (batch, 3, d_model)
