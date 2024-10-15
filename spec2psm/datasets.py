@@ -16,12 +16,13 @@ import pyarrow.parquet as pq
 import numpy as np
 from torch.utils.data import Dataset
 from spec2psm.preprocess import get_spec2psm_tokens, pad_with_zeros, tokenize_peptide
+from spectrum_utils.spectrum import MsmsSpectrum
 
 PSM_TOKENS = get_spec2psm_tokens()
 
 class Spec2PSMDataset(Dataset):
 
-    def __init__(self, file_paths, row_group_size=100, max_peptide_length=30, normalize=True, intensity_mean=None, intensity_std=None, mz_mean=None, mz_std=None, precursor_mass_mean=None, precursor_mass_std=None):
+    def __init__(self, file_paths, row_group_size=100, max_peptide_length=30, normalize=True):
         self.file_paths = file_paths
         self.row_group_size = row_group_size
         self.parquet_files = [pq.ParquetFile(file_path) for file_path in file_paths]
@@ -37,18 +38,13 @@ class Spec2PSMDataset(Dataset):
         # Store normalization parameters (mean and std)
         # TODO if these are all None we need to calculate them...
         self.normalize = normalize
-        self.intensity_mean = intensity_mean
-        self.intensity_std = intensity_std
-        self.mz_mean = mz_mean
-        self.mz_std = mz_std
-        self.precursor_mass_mean = precursor_mass_mean
-        self.precursor_mass_std = precursor_mass_std
         self.max_peptide_length = max_peptide_length
         self.psm_tokens = get_spec2psm_tokens()
 
     def __len__(self):
         # Return the total number of rows across all files
         return sum([self.row_group_size * x - self.row_group_size for x in self.row_group_sizes])
+        # return 1000
 
     def __getitem__(self, idx):
         # Determine which file and row group to read from
@@ -71,42 +67,44 @@ class Spec2PSMDataset(Dataset):
         # Extract relevant data from the row
         intensities = row['intensity']
         mz = row['mz']
+        precursor_mz = row['precursor_mz_spectra']
+        precursor_charge = row['charge_spectra']
+        precursor_mass_spectra = row['precursor_mass_spectra']
 
-        # Restrict mz and intensity to a maximum of 100 entries
-        if len(intensities) > 100:
-            # Sort by intensity and get indices of the top 100 values
-            sorted_indices = sorted(range(len(intensities)), key=lambda i: intensities[i], reverse=True)[:100]
-            intensities = np.array([intensities[i] for i in sorted_indices])
-            mz = np.array([mz[i] for i in sorted_indices])
+        spectrum = MsmsSpectrum(
+            "",
+            precursor_mz,
+            precursor_charge,
+            mz.astype(np.float64),
+            intensities.astype(np.float32),
+        )
 
-        # Apply z-score normalization
-        # if self.normalize:
-        #     intensities = (intensities - self.intensity_mean) / self.intensity_std
-        #     mz = (mz - self.mz_mean) / self.mz_std
+        spectrum.set_mz_range(50, 2500)
 
-        # l2 norm
-        if self.normalize:
-            intensities = self.l2_normalize(intensities)
-            mz = self.l2_normalize(mz)
+        spectrum.remove_precursor_peak(2, "Da")
+
+        spectrum.filter_intensity(max_num_peaks = 150)
+
+        spectrum.scale_intensity("root", 1)
+
+        mz_transformed = spectrum.mz
+        intensities_transformed = spectrum.intensity
+
 
         # Pad mz and intensity to length 100
-        if len(intensities) < 100:
-            intensities = np.concatenate((intensities, np.zeros(100 - len(intensities))))
-            mz = np.concatenate((mz, np.zeros(100 - len(mz))))
+        if len(intensities_transformed) < 150:
+            intensities_transformed = np.concatenate((intensities_transformed, np.zeros(150 - len(intensities_transformed))))
+            mz_transformed = np.concatenate((mz_transformed, np.zeros(150 - len(mz_transformed))))
 
         # Convert to tensors
-        intensities = torch.tensor(intensities, dtype=torch.float32)
-        mz = torch.tensor(mz, dtype=torch.float32)
-        if self.normalize:
-            # precursor_mass = torch.tensor((row['precursor_mz_spectra'] - self.precursor_mass_mean) / self.precursor_mass_std, dtype=torch.float32)
-            precursor_mass = torch.tensor(row['precursor_mz_spectra'] / 2000, dtype=torch.float32)
+        intensities_transformed = torch.tensor(intensities_transformed, dtype=torch.float32)
+        mz_transformed = torch.tensor(mz_transformed, dtype=torch.float32)
 
-        else:
-            precursor_mass = torch.tensor(row['precursor_mz_spectra'], dtype=torch.float32)
+        precursor_mass = torch.tensor(row['precursor_mz_spectra'], dtype=torch.float32)
         charge = torch.tensor(row['charge_spectra'], dtype=torch.float32)
 
         # Create a mask where intensity or mz is zero
-        mask = (intensities == 0) | (mz == 0)  # Use OR for masking
+        mask = (intensities_transformed == 0) | (mz_transformed == 0)  # Use OR for masking
 
         # Prepare precursor_mass and charge
         precursor_mass_padded = np.where(mask, 0, precursor_mass)
@@ -118,12 +116,13 @@ class Spec2PSMDataset(Dataset):
 
         # Stack the features to form a tensor of shape (100, 4)
         # features = torch.stack([mz, intensities, precursor_mass.repeat(100), charge.repeat(100)], dim=-1)
-        features = torch.stack([mz, intensities,
-                                torch.tensor(precursor_mass_padded, dtype=torch.float32), torch.tensor(charge_padded, dtype=torch.float32)], dim=-1)
+        try:
+            # features = torch.stack([mz_transformed, intensities_transformed,
+            #                         torch.tensor(precursor_mass_padded, dtype=torch.float32), torch.tensor(charge_padded, dtype=torch.float32)], dim=-1)
+            features = torch.stack([mz_transformed, intensities_transformed], dim=-1)
 
-        mz_sorted_indices = torch.argsort(features[:, 0])  # Sort by the first column (mz)
-
-        sorted_features = features[mz_sorted_indices]
+        except:
+            print("problem")
 
         # Extract target (Y) from the row
         peptide = row['peptide_string_spec2psm']  # Assuming 'peptide' is the target column
@@ -134,10 +133,16 @@ class Spec2PSMDataset(Dataset):
         padded_target = torch.tensor(pad_with_zeros(target, target_length=self.max_peptide_length))
 
         # Convert the tensors to the correct types...
-        features_32 = sorted_features.clone().detach().float()
+        features_32 = features.clone().detach().float()
         padded_target_long = padded_target.clone().detach().long()
 
-        return features_32, padded_target_long
+        # # Get random permutation of indices
+        # shuffled_indices = torch.randperm(features_32.size(1))
+        #
+        # # Scramble the tensor
+        # features_32 = features_32[shuffled_indices]
+
+        return features_32, padded_target_long, precursor_mass, charge, precursor_mass_spectra
 
     def _get_file_and_row_group(self, idx):
         # Determine which file contains the desired row group
@@ -154,3 +159,21 @@ class Spec2PSMDataset(Dataset):
         # Normalize the features
         normalized_features = features / norm
         return normalized_features
+
+    def normalize_peak_intensities(self, intensities):
+        """
+        Applies square-root transformation and normalizes the intensities.
+
+        Parameters:
+        intensities (np.ndarray): Array of peak intensities.
+
+        Returns:
+        np.ndarray: Normalized intensities.
+        """
+        # Apply square-root transformation
+        sqrt_intensities = np.sqrt(intensities)
+
+        # Normalize by dividing by the sum of square-root intensities
+        normalized_intensities = sqrt_intensities / np.sum(sqrt_intensities)
+
+        return normalized_intensities

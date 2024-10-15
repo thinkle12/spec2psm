@@ -42,24 +42,60 @@ PEPTIDE_ENCODING_MAP = {'Q': 1, 'W': 2, 'E': 3, 'R': 4, 'T': 5, 'Y': 6, 'I': 7, 
                         'Kt': 22, 'nt': 23, 'Cc': 24, 'Mo': 25, 'Sp': 26, 'Tp': 27, 'Yp': 28, 'ntcy': 29, 'Nd': 30,
                         'Qd': 31, 'nTpg': 32, 'ndm': 33, 'Kdm': 34, 'ndmc': 35, 'Kdmc': 36, 'na': 37, 'ncy': 38,
                         'npg': 39, 'Ku': 40, 'Rs': 41, 'Ks': 42, 'ndmcpg': 43, 'Cn': 44, 'Yt': 45, 'Sa': 46,
-                        "<unk>": 47, "<start>": 48, "<end>": 49, PAD_TOKEN: 0}
+                        "<unk>": 47, "<start>": 48,"<end>": 49, PAD_TOKEN: 0}
 
+PEPTIDE_ENCODING_MAP_SMALL = {'Q': 1, 'W': 2, 'E': 3, 'R': 4, 'T': 5, 'Y': 6, 'I': 7, 'P': 8, 'A': 9, 'S': 10, 'D': 11,
+                        'F': 12, 'G': 13, 'H': 14, 'K': 15, 'L': 16, 'C': 17, 'V': 18, 'N': 19, 'M': 20, 'na': 21,
+                        'Cc': 22, 'Mo': 23, "<unk>": 24, "<start>": 25, "<end>": 26, PAD_TOKEN: 0}
+
+DISALLOWED_TOKENS_MAP = {'nta': 21, 'Kt': 22, 'nt': 23, 'Sp': 26, 'Tp': 27, 'Yp': 28, 'ntcy': 29, 'Nd': 30,
+                        'Qd': 31, 'nTpg': 32, 'ndm': 33, 'Kdm': 34, 'ndmc': 35, 'Kdmc': 36, 'ncy': 38,
+                        'npg': 39, 'Ku': 40, 'Rs': 41, 'Ks': 42, 'ndmcpg': 43, 'Cn': 44, 'Yt': 45, 'Sa': 46}
+
+DISALLOWED_TOKENS = list(DISALLOWED_TOKENS_MAP.keys())
 
 
 AMINO_ACIDS = list(std_amino_acids)
 MOD_LIST = list(UNIMOD_TO_SPEC2PSM.values())
 
+TOKEN_TO_MASS = {
+    1:128.058577540,
+    2:186.079312980,
+    3:129.042593135,
+    4:156.101111050,
+    5:101.047678505,
+    6:163.063328575,
+    7:113.084064015,
+    8:97.052763875,
+    9:71.037113805,
+    10:87.032028435,
+    11:115.026943065,
+    12:147.068413945,
+    13:57.021463735,
+    14:137.058911875,
+    15:128.094963050,
+    16:113.084064015,
+    17:103.009184505,
+    18:99.068413945,
+    19:114.042927470,
+    20:131.040484645,
+    21:42.011,
+    22:57.021+103.009184505,
+    23:15.995+131.040484645,
+}
+
+
 def tokenize_peptide(peptide, psm_tokens, max_peptide_length=30):
 
     split_peptide = split_peptide_by_tokens(peptide_string=peptide, tokens=psm_tokens)
 
-    encoded_sequence = [PEPTIDE_ENCODING_MAP['<start>']] + \
-                       [PEPTIDE_ENCODING_MAP.get(aa, PEPTIDE_ENCODING_MAP['<unk>']) for aa in split_peptide] + \
-                       [PEPTIDE_ENCODING_MAP['<end>']]
+    encoded_sequence = ([PEPTIDE_ENCODING_MAP_SMALL['<start>']] + \
+                        [PEPTIDE_ENCODING_MAP_SMALL.get(aa, PEPTIDE_ENCODING_MAP_SMALL['<unk>']) for aa in split_peptide] + \
+                       [PEPTIDE_ENCODING_MAP_SMALL['<end>']])
 
     return encoded_sequence
 
-def pad_with_zeros(array, target_length=100):
+def pad_with_zeros(array, target_length=150):
     """Pad the array with zeros to the target length."""
     padded_array = np.zeros(target_length)
     padded_array[:len(array)] = array  # Only fill with existing values
