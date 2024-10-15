@@ -91,12 +91,16 @@ class Spec2Psm(nn.Module):
 
         # Add the encoded precursors to the encoded spectra
         # Might play around with this and concat after transformer encoder instead
-        encoded_spectra_and_precursors = torch.cat([precursors_encoded, src], dim=1)
-        src_padding_mask = (encoded_spectra_and_precursors[:, :, 1] == 0)  # Mask out zero values in the intensity feature
+        #encoded_spectra_and_precursors = torch.cat([precursors_encoded, src], dim=1)
+        src_padding_mask = (src[:, :, 1] == 0)  # Mask out zero values in the intensity feature
         # Shape: (batch, num_peaks+3, d_model)
 
         # Pass through the transformer encoder
-        encoder_output = self.transformer_encoder(encoded_spectra_and_precursors, src_key_padding_mask=src_padding_mask)
+        encoder_output = self.transformer_encoder(src, src_key_padding_mask=src_padding_mask)
+
+        encoded_spectra_and_precursors_encoder_output = torch.cat([precursors_encoded, encoder_output], dim=1)
+        src_padding_mask2 = (encoded_spectra_and_precursors_encoder_output[:, :, 1] == 0)  # Mask out zero values in the intensity feature
+
 
         # Apply output embeddings for peptide sequence
         tgt = self.output_embedding(tgt)
@@ -108,9 +112,9 @@ class Spec2Psm(nn.Module):
         tgt_encoded = self.learnable_positional_encoding_peptide(tgt)
 
         # Pass through the transformer decoder
-        output = self.transformer_decoder(tgt_encoded, encoder_output,
+        output = self.transformer_decoder(tgt_encoded, encoded_spectra_and_precursors_encoder_output,
                                           tgt_mask=tgt_mask,
-                                          memory_key_padding_mask=src_padding_mask,
+                                          memory_key_padding_mask=src_padding_mask2,
                                           tgt_key_padding_mask=tgt_padding_mask)
 
         # Final linear layer to predict the next token in the peptide sequence
