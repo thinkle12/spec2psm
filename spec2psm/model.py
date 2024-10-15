@@ -3,6 +3,16 @@ import torch.nn as nn
 import math
 from depthcharge.components.encoders import FloatEncoder, PeakEncoder, PositionalEncoder
 
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_seq_length):
+        super(PositionalEncoding, self).__init__()
+        # Create a learnable positional encoding
+        self.positional_encoding = nn.Parameter(torch.randn(1, max_seq_length, d_model))
+
+    def forward(self, embedded_peptides):
+        # Add positional encodings to the embedded peptides
+        seq_length = embedded_peptides.size(1)
+        return embedded_peptides + self.positional_encoding[:, :seq_length, :]
 
 class Spec2Psm(nn.Module):
     def __init__(self, vocab_size, d_model, max_seq_len, nhead, num_encoder_layers, num_decoder_layers, ff_dim, dropout=0.2, max_charge=10, max_precursor_mass=2500):
@@ -20,7 +30,7 @@ class Spec2Psm(nn.Module):
         self.output_embedding = nn.Embedding(vocab_size, d_model, padding_idx=0).to(torch.float32)  # Assuming vocab size
 
         # Learnable latent representations for each charge state and precursor mass bucket
-        self.latent_spectrum_granular = nn.Embedding(max_charge * max_precursor_mass, d_model)
+        self.latent_spectrum_granular = nn.Embedding(max_charge * max_precursor_mass * 10, d_model)
 
         self.latent_spectrum = torch.nn.Parameter(torch.randn(1, 1, d_model))
         self.peak_encoder = PeakEncoder(d_model)
@@ -32,6 +42,9 @@ class Spec2Psm(nn.Module):
 
         # Positional embeddings
         self.positional_encoding_peptide = PositionalEncoder(d_model)
+
+        # Learnable positional encoding initialized as nn.Parameter
+        self.learnable_positional_encoding_peptide = PositionalEncoding(d_model, max_seq_len)
 
         # Output linear layer to predict peptide sequence
         self.fc_out = nn.Linear(d_model, vocab_size)
@@ -69,6 +82,7 @@ class Spec2Psm(nn.Module):
         precursor_buckets = precursor_buckets.clamp(0,self.max_precursor_mass*10 - 1)  # Ensure we stay within valid bucket range
         # Combine charge states and precursor bucket indices to get a unique index
         latent_indices = precursors[:, 1] * precursor_buckets  # This assumes charge states can overlap with buckets directly
+        latent_indices = latent_indices.long()
         # Get the latent spectrum representation
         latent_spectra = self.latent_spectrum_granular(latent_indices)
 
@@ -88,7 +102,10 @@ class Spec2Psm(nn.Module):
         tgt = self.output_embedding(tgt)
 
         # Apply sinusoidal positional encoding for target (peptide sequence)
-        tgt_encoded = self.positional_encoding_peptide(tgt)
+        # tgt_encoded = self.positional_encoding_peptide(tgt)
+
+        # Add the learnable positional encoding
+        tgt_encoded = self.learnable_positional_encoding_peptide(tgt)
 
         # Pass through the transformer decoder
         output = self.transformer_decoder(tgt_encoded, encoder_output,
