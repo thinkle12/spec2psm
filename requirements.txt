@@ -7,3 +7,5 @@ numpy
 pyarrow
 levenshtein
 depthcharge-ms
+pyyaml
+sklearn

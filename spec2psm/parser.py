@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import pyopenms as ms
 from pyteomics import pepxml
+from sklearn.model_selection import train_test_split
 
 from spec2psm.preprocess import UNIMOD_TO_SPEC2PSM
 
@@ -367,7 +368,7 @@ class SpectraToSearchMap(object):
         self.manifest = self.search_object.search_params
         self.data = None
 
-    def map_results(self):
+    def map_results(self, q_value_threshold=0.01):
 
         logger.info("Mapping spectra object and search object")
 
@@ -394,6 +395,11 @@ class SpectraToSearchMap(object):
                 mapped_results, self.percolator_object.data, on="scan_id", suffixes=('_search', '_percolator')
             )
             mapped_results.rename(columns={'score_percolator': 'score'}, inplace=True)
+            if q_value_threshold:
+                logger.info("Number of results before Q Value filtering: {}".format(len(mapped_results)))
+                mapped_results = mapped_results[mapped_results['q_value'] <= q_value_threshold]
+                logger.info("Filtering by Q Value")
+                logger.info("Number of results after Q Value filtering: {}".format(len(mapped_results)))
 
         # Remove non-essential columns
         final_df = mapped_results[
@@ -494,6 +500,43 @@ class SpectraToSearchMap(object):
 
         # Write the combined DataFrame back to the file
         combined_manifest.to_csv(output_filename, sep='\t', index=False)
+
+
+class Parquet(object):
+
+    def __init__(self, filepath):
+        self.filepath = filepath
+        self.data = None
+        self.train_filepath = self.create_filepath(filepath=self.filepath, tag="train")
+        self.dev_filepath = self.create_filepath(filepath=self.filepath, tag="dev")
+        self.test_filepath = self.create_filepath(filepath=self.filepath, tag="test")
+
+    def create_filepath(self, filepath, tag):
+        filename = filepath.split(".parquet")[0]
+        new_filepath = filename + "_" + tag + ".parquet"
+        return new_filepath
+
+    def train_test_dev_split(self, train_percent=0.9, dev_percent=0.05, test_percent=0.05):
+
+        total_percent = train_percent + dev_percent + test_percent
+        if int(total_percent) != 1:
+            raise ValueError("Percentages of Train + Dev + Test must sum to 1")
+
+        parquet_df = pd.read_parquet(self.filepath)
+
+        # First, split the data into 90% train and 10% temporary (dev + test)
+        train_df, temp_df = train_test_split(parquet_df, test_size=1-train_percent, random_state=42)
+
+        # Then, split the temporary set into 5% dev and 5% test
+        dev_df, test_df = train_test_split(temp_df, test_size=0.5, random_state=42)
+
+        # Check the sizes of the splits
+        print(f"Train set: {len(train_df)}, Dev set: {len(dev_df)}, Test set: {len(test_df)}")
+
+        train_df.to_parquet(self.train_filepath, row_group_size=500, engine="pyarrow")
+        dev_df.to_parquet(self.dev_filepath, row_group_size=500, engine="pyarrow")
+        test_df.to_parquet(self.test_filepath, row_group_size=500, engine="pyarrow")
+
 
 
 # The goal of ModHandler is to transform peptides to contain msfragger like modifications for both static and variable mods

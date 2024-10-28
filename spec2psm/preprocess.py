@@ -36,17 +36,20 @@ UNIMOD_TO_SPEC2PSM = {
     'S(UniMod:1)': "Sa",  # Acetyl
 }
 
-PAD_TOKEN = "<pad>"
-PEPTIDE_ENCODING_MAP = {'Q': 1, 'W': 2, 'E': 3, 'R': 4, 'T': 5, 'Y': 6, 'I': 7, 'P': 8, 'A': 9, 'S': 10, 'D': 11,
+PAD_SYMBOL = "<pad>"
+START_SYMBOL = "<start>"
+EOS_SYMBOL = "<end>"
+UNK_SYMBOL = "<unk>"
+PEPTIDE_SYMBOLS_TO_TOKEN_MAP = {'Q': 1, 'W': 2, 'E': 3, 'R': 4, 'T': 5, 'Y': 6, 'I': 7, 'P': 8, 'A': 9, 'S': 10, 'D': 11,
                         'F': 12, 'G': 13, 'H': 14, 'K': 15, 'L': 16, 'C': 17, 'V': 18, 'N': 19, 'M': 20, 'nta': 21,
                         'Kt': 22, 'nt': 23, 'Cc': 24, 'Mo': 25, 'Sp': 26, 'Tp': 27, 'Yp': 28, 'ntcy': 29, 'Nd': 30,
                         'Qd': 31, 'nTpg': 32, 'ndm': 33, 'Kdm': 34, 'ndmc': 35, 'Kdmc': 36, 'na': 37, 'ncy': 38,
                         'npg': 39, 'Ku': 40, 'Rs': 41, 'Ks': 42, 'ndmcpg': 43, 'Cn': 44, 'Yt': 45, 'Sa': 46,
-                        "<unk>": 47, "<start>": 48,"<end>": 49, PAD_TOKEN: 0}
+                                UNK_SYMBOL: 47, START_SYMBOL: 48, EOS_SYMBOL: 49, PAD_SYMBOL: 0}
 
-PEPTIDE_ENCODING_MAP_SMALL = {'Q': 1, 'W': 2, 'E': 3, 'R': 4, 'T': 5, 'Y': 6, 'I': 7, 'P': 8, 'A': 9, 'S': 10, 'D': 11,
+PEPTIDE_SYMBOLS_TO_TOKEN_MAP_SMALL = {'Q': 1, 'W': 2, 'E': 3, 'R': 4, 'T': 5, 'Y': 6, 'I': 7, 'P': 8, 'A': 9, 'S': 10, 'D': 11,
                         'F': 12, 'G': 13, 'H': 14, 'K': 15, 'L': 16, 'C': 17, 'V': 18, 'N': 19, 'M': 20, 'na': 21,
-                        'Cc': 22, 'Mo': 23, "<unk>": 24, "<start>": 25, "<end>": 26, PAD_TOKEN: 0}
+                        'Cc': 22, 'Mo': 23, UNK_SYMBOL: 24, START_SYMBOL: 25, EOS_SYMBOL: 26, PAD_SYMBOL: 0}
 
 DISALLOWED_TOKENS_MAP = {'nta': 21, 'Kt': 22, 'nt': 23, 'Sp': 26, 'Tp': 27, 'Yp': 28, 'ntcy': 29, 'Nd': 30,
                         'Qd': 31, 'nTpg': 32, 'ndm': 33, 'Kdm': 34, 'ndmc': 35, 'Kdmc': 36, 'ncy': 38,
@@ -84,14 +87,16 @@ TOKEN_TO_MASS = {
     23:15.995+131.040484645,
 }
 
+# TODO I think I want to consider having a Peptide class
+# Each Peptide  can basically store the aa_mod_symbols and the maps so I dont have to pass that data around...
 
-def tokenize_peptide(peptide, psm_tokens, max_peptide_length=30):
+def tokenize_peptide(peptide, aa_mod_symbols):
 
-    split_peptide = split_peptide_by_tokens(peptide_string=peptide, tokens=psm_tokens)
+    split_peptide = split_peptide_by_aa_and_mods(peptide_string=peptide, aa_mod_symbols=aa_mod_symbols)
 
-    encoded_sequence = ([PEPTIDE_ENCODING_MAP_SMALL['<start>']] + \
-                        [PEPTIDE_ENCODING_MAP_SMALL.get(aa, PEPTIDE_ENCODING_MAP_SMALL['<unk>']) for aa in split_peptide] + \
-                       [PEPTIDE_ENCODING_MAP_SMALL['<end>']])
+    encoded_sequence = ([PEPTIDE_SYMBOLS_TO_TOKEN_MAP_SMALL['<start>']] + \
+                        [PEPTIDE_SYMBOLS_TO_TOKEN_MAP_SMALL.get(aa, PEPTIDE_SYMBOLS_TO_TOKEN_MAP_SMALL['<unk>']) for aa in split_peptide] + \
+                        [PEPTIDE_SYMBOLS_TO_TOKEN_MAP_SMALL['<end>']])
 
     return encoded_sequence
 
@@ -101,7 +106,7 @@ def pad_with_zeros(array, target_length=150):
     padded_array[:len(array)] = array  # Only fill with existing values
     return padded_array
 
-def get_spec2psm_tokens(amino_acids=None, mods=None):
+def get_spec2psm_aa_mod_symbols(amino_acids=None, mods=None):
     if mods is None:
         mods = MOD_LIST
     if amino_acids is None:
@@ -109,102 +114,13 @@ def get_spec2psm_tokens(amino_acids=None, mods=None):
     return sorted(amino_acids + mods, key=len, reverse=True)
 
 
-def split_peptide_by_tokens(peptide_string, tokens):
+def split_peptide_by_aa_and_mods(peptide_string, aa_mod_symbols):
     # Sort the tokens by length in descending order
-    sorted_tokens = sorted(tokens, key=len, reverse=True)
+    sorted_aa_mod_symbols = sorted(aa_mod_symbols, key=len, reverse=True)
     # Create a regex pattern by joining the sorted tokens with '|'
-    pattern = '|'.join(map(re.escape, sorted_tokens))
+    pattern = '|'.join(map(re.escape, sorted_aa_mod_symbols))
     # Use re.findall to split the input string by matching tokens
     return re.findall(pattern, peptide_string)
-
-def calculate_means(file_paths):
-    total_intensity_sum = 0
-    total_mz_sum = 0
-    total_precursor_mass_sum = 0
-
-    total_intensity_count = 0
-    total_mz_count = 0
-    total_precursor_mass_count = 0
-
-    for file_path in file_paths:
-        # Read the entire Parquet file
-        df = pq.read_table(file_path).to_pandas()
-
-        for index, row in df.iterrows():
-            # Extract intensity and mz arrays
-            intensities = row['intensity']
-            mz = row['mz']
-
-            # Get the indices of the top 100 intensity values
-            if len(intensities) > 100:
-                # Keep the top 100 intensity and corresponding mz values
-                sorted_indices = sorted(range(len(intensities)), key=lambda i: intensities[i], reverse=True)[:100]
-                top_intensities = [intensities[i] for i in sorted_indices]
-                top_mz = [mz[i] for i in sorted_indices]
-            else:
-                top_intensities = intensities
-                top_mz = mz
-
-            # Update sums and counts
-            total_intensity_sum += np.sum(top_intensities)
-            total_mz_sum += np.sum(top_mz)
-            total_precursor_mass_sum += row['precursor_mz_spectra']  # Assuming this is a scalar
-
-            total_intensity_count += len(top_intensities)
-            total_mz_count += len(top_mz)
-            total_precursor_mass_count += 1  # Each row contributes 1 to precursor mass count
-
-    # Calculate means
-    intensity_mean = total_intensity_sum / total_intensity_count if total_intensity_count > 0 else 0
-    mz_mean = total_mz_sum / total_mz_count if total_mz_count > 0 else 0
-    precursor_mass_mean = total_precursor_mass_sum / total_precursor_mass_count if total_precursor_mass_count > 0 else 0
-
-    return intensity_mean, mz_mean, precursor_mass_mean
-
-def calculate_stds(file_paths, intensity_mean, mz_mean, precursor_mass_mean):
-    total_intensity_squared_diff_sum = 0
-    total_mz_squared_diff_sum = 0
-    total_precursor_mass_squared_diff_sum = 0
-
-    total_intensity_count = 0
-    total_mz_count = 0
-    total_precursor_mass_count = 0
-
-    for file_path in file_paths:
-        # Read the entire Parquet file
-        df = pq.read_table(file_path).to_pandas()
-
-        for index, row in df.iterrows():
-            # Extract intensity and mz arrays
-            intensities = row['intensity']
-            mz = row['mz']
-
-            # Get the indices of the top 100 intensity values
-            if len(intensities) > 100:
-                # Keep the top 100 intensity and corresponding mz values
-                sorted_indices = sorted(range(len(intensities)), key=lambda i: intensities[i], reverse=True)[:100]
-                top_intensities = [intensities[i] for i in sorted_indices]
-                top_mz = [mz[i] for i in sorted_indices]
-            else:
-                top_intensities = intensities
-                top_mz = mz
-
-            # Update squared differences
-            total_intensity_squared_diff_sum += np.sum((top_intensities - intensity_mean) ** 2)
-            total_mz_squared_diff_sum += np.sum((top_mz - mz_mean) ** 2)
-            total_precursor_mass_squared_diff_sum += (row['precursor_mz_spectra'] - precursor_mass_mean) ** 2
-
-            total_intensity_count += len(top_intensities)
-            total_mz_count += len(top_mz)
-            total_precursor_mass_count += 1  # Each row contributes 1 to precursor mass count
-
-    # Calculate standard deviations
-    intensity_std = np.sqrt(total_intensity_squared_diff_sum / total_intensity_count) if total_intensity_count > 0 else 0
-    mz_std = np.sqrt(total_mz_squared_diff_sum / total_mz_count) if total_mz_count > 0 else 0
-    precursor_mass_std = np.sqrt(total_precursor_mass_squared_diff_sum / total_precursor_mass_count) if total_precursor_mass_count > 0 else 0
-
-    return intensity_std, mz_std, precursor_mass_std
-
 
 def get_max_peptide_length(file_paths, psm_tokens):
 

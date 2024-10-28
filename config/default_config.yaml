@@ -1,0 +1,22 @@
+dataset:
+  max_peptide_length: 62
+  spectra_length: 150
+  row_group_size: 500
+  pad_token: 0
+  eos_token: 26
+  start_token: 25
+model:
+  batch_size: 32
+  d_model: 512
+  ff_dim: 1024
+  dropout: 0.1
+  nheads: 8
+  decoder_layers: 4
+  encoder_layers: 4
+  num_epochs: 5
+  device: mps
+optimizer:
+  lr: 1e-4
+  weight_decay: 1e-5
+  warmup_steps: 1000
+  total_model_steps: 30_000_000
