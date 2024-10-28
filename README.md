@@ -2,7 +2,7 @@
 
 A Framework for deep learning transformer encoder/decoder models to predict peptide sequence from spectra. 
 This repo is a work in progress currently
-![logo](static/spec2PSM.png)
+<img src="./static/spec2PSM.png" alt="logo" width="400"/>
 
 
 # Potential datasets
