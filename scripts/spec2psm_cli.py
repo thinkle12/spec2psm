@@ -114,7 +114,16 @@ def convert_mode(config_path, spectra_paths, search_paths, fdr_paths, output_dir
                 output_directory = os.path.dirname(mzml_file)
             mapper.results_to_parquet(directory=output_directory)
 
-def train_mode(model_filename, config_path, device, train_parquet_paths, val_parquet_paths=None, file_output_tag=None, mods_path=None):
+
+def train_mode(
+    model_filename,
+    config_path,
+    device,
+    train_parquet_paths,
+    val_parquet_paths=None,
+    file_output_tag=None,
+    mods_path=None,
+):
     config = OmegaConf.load(config_path)
 
     logger.info("Running Train Mode")
@@ -199,7 +208,7 @@ def finetune_mode(
     resume=False,
     val_parquet_paths=None,
     file_output_tag=None,
-    mods_path=None
+    mods_path=None,
 ):
 
     config = OmegaConf.load(config_path)
@@ -387,54 +396,50 @@ def get_parquet_paths(input_paths):
 def main():
     parser = argparse.ArgumentParser(
         prog="spec2psm",
-        description="Command-line interface for the Spec2PSM pipeline. Provides tools for converting spectral files to parquet, training models, fine-tuning, validation, and inference."
+        description="Command-line interface for the Spec2PSM pipeline. Provides tools for converting spectral files to parquet, training models, fine-tuning, validation, and inference.",
     )
     subparsers = parser.add_subparsers(dest="mode", help="Available modes")
 
     # Parse mode
-    convert_parser = subparsers.add_parser("convert", help="Convert a spectral file and/or psm file to parquet using a configuration file. To be used for training and inference.")
+    convert_parser = subparsers.add_parser(
+        "convert",
+        help="Convert a spectral file and/or psm file to parquet using a configuration file. To be used for training and inference.",
+    )
     convert_parser.add_argument("-c", "--config_path", help="Path to the configuration file for parsing.")
     convert_parser.add_argument(
         "-o",
         "--output_directory",
         help="Optional: Directory to save Parquet files in. If not provided will save in the same directory mzML files live.",
-        default=None
+        default=None,
     )
     convert_parser.add_argument(
         "-m",
         "--mzml_paths",
         nargs="+",
         required=True,
-        help="One or more mzML file paths for converting to Parquet. Provide a space-separated list if multiple paths are required."
+        help="One or more mzML file paths for converting to Parquet. Provide a space-separated list if multiple paths are required.",
     )
     convert_parser.add_argument(
         "-s",
         "--search_paths",
         nargs="+",
         required=False,
-        help="One or more mzid OR pepxml file paths for converting to Parquet. Provide a space-separated list if multiple paths are required. idXML support coming in the future."
+        help="One or more mzid OR pepxml file paths for converting to Parquet. Provide a space-separated list if multiple paths are required. idXML support coming in the future.",
     )
     convert_parser.add_argument(
         "-f",
         "--fdr_paths",
         nargs="+",
         required=False,
-        help="One or more target percolator result file paths for converting to Parquet. Provide a space-separated list if multiple paths are required. This is only compatible if mzML and pepXML paths are both provided as well."
+        help="One or more target percolator result file paths for converting to Parquet. Provide a space-separated list if multiple paths are required. This is only compatible if mzML and pepXML paths are both provided as well.",
     )
     convert_parser.add_argument(
-        "-u",
-        "--mods_path",
-        help="Optional: Path to a file specifying modification settings.",
-        default=None
+        "-u", "--mods_path", help="Optional: Path to a file specifying modification settings.", default=None
     )
 
     # Train mode
     train_parser = subparsers.add_parser("train", help="Train a Spec2PSM model.")
-    train_parser.add_argument(
-        "-o",
-        "--output_model_name",
-        help="Path to save the trained model weights."
-    )
+    train_parser.add_argument("-o", "--output_model_name", help="Path to save the trained model weights.")
     train_parser.add_argument(
         "-c",
         "--config_path",
@@ -445,40 +450,26 @@ def main():
         "--train_parquet_paths",
         nargs="+",
         required=True,
-        help="One or more directories or Parquet file paths for training. Provide a space-separated list if multiple paths are required."
+        help="One or more directories or Parquet file paths for training. Provide a space-separated list if multiple paths are required.",
     )
     train_parser.add_argument(
         "-v",
         "--val_parquet_paths",
         nargs="+",
         required=False,
-        help="Optional: One or more directories or Parquet file paths for validation. Provide a space-separated list if multiple paths are required."
+        help="Optional: One or more directories or Parquet file paths for validation. Provide a space-separated list if multiple paths are required.",
     )
     train_parser.add_argument(
-        "-d",
-        "--device",
-        help="Device to use for training: 'mps', 'cpu', or 'gpu'.",
-        default=None
+        "-d", "--device", help="Device to use for training: 'mps', 'cpu', or 'gpu'.", default=None
     )
     train_parser.add_argument(
-        "-u",
-        "--mods_path",
-        help="Optional: Path to a file specifying additional modification settings.",
-        default=None
+        "-u", "--mods_path", help="Optional: Path to a file specifying additional modification settings.", default=None
     )
 
     # Finetune mode
     tune_parser = subparsers.add_parser("tune", help="Fine-tune a pre-trained Spec2PSM model.")
-    tune_parser.add_argument(
-        "-m",
-        "--model",
-        help="Path to the model weights or name of a Hugging Face model."
-    )
-    tune_parser.add_argument(
-        "-o",
-        "--output_model_name",
-        help="Path to save the fine-tuned model weights."
-    )
+    tune_parser.add_argument("-m", "--model", help="Path to the model weights or name of a Hugging Face model.")
+    tune_parser.add_argument("-o", "--output_model_name", help="Path to save the fine-tuned model weights.")
     tune_parser.add_argument(
         "-c",
         "--config_path",
@@ -489,42 +480,32 @@ def main():
         "--train_parquet_paths",
         nargs="+",
         required=True,
-        help="One or more directories or Parquet file paths for training. Use a space-separated list for multiple paths."
+        help="One or more directories or Parquet file paths for training. Use a space-separated list for multiple paths.",
     )
     tune_parser.add_argument(
         "-v",
         "--val_parquet_paths",
         nargs="+",
         required=False,
-        help="Optional: One or more directories or Parquet file paths for validation. Use a space-separated list for multiple paths."
+        help="Optional: One or more directories or Parquet file paths for validation. Use a space-separated list for multiple paths.",
     )
     tune_parser.add_argument(
-        "-d",
-        "--device",
-        help="Device to use for fine-tuning: 'mps', 'cpu', or 'gpu'.",
-        default=None
+        "-d", "--device", help="Device to use for fine-tuning: 'mps', 'cpu', or 'gpu'.", default=None
     )
     tune_parser.add_argument(
         "-r",
         "--resume",
         action="store_true",
         default=False,
-        help="Optional: Resume training from a checkpoint. Includes optimizer settings."
+        help="Optional: Resume training from a checkpoint. Includes optimizer settings.",
     )
     tune_parser.add_argument(
-        "-u",
-        "--mods_path",
-        help="Optional: Path to a file specifying modification settings.",
-        default=None
+        "-u", "--mods_path", help="Optional: Path to a file specifying modification settings.", default=None
     )
 
     # Validate mode
     validate_parser = subparsers.add_parser("validate", help="Validate a Spec2PSM model.")
-    validate_parser.add_argument(
-        "-m",
-        "--model",
-        help="Path to the model weights or name of a Hugging Face model."
-    )
+    validate_parser.add_argument("-m", "--model", help="Path to the model weights or name of a Hugging Face model.")
     validate_parser.add_argument(
         "-c",
         "--config_path",
@@ -535,28 +516,18 @@ def main():
         "--parquet_paths",
         nargs="+",
         required=True,
-        help="One or more directories or Parquet file paths for validation. Use a space-separated list for multiple paths."
+        help="One or more directories or Parquet file paths for validation. Use a space-separated list for multiple paths.",
     )
     validate_parser.add_argument(
-        "-d",
-        "--device",
-        help="Device to use for validation: 'mps', 'cpu', or 'gpu'.",
-        default=None
+        "-d", "--device", help="Device to use for validation: 'mps', 'cpu', or 'gpu'.", default=None
     )
     validate_parser.add_argument(
-        "-u",
-        "--mods_path",
-        help="Optional: Path to a file specifying modification settings.",
-        default=None
+        "-u", "--mods_path", help="Optional: Path to a file specifying modification settings.", default=None
     )
 
     # Infer mode
     infer_parser = subparsers.add_parser("infer", help="Run inference using a Spec2PSM model.")
-    infer_parser.add_argument(
-        "-m",
-        "--model",
-        help="Path to the model weights or name of a Hugging Face model."
-    )
+    infer_parser.add_argument("-m", "--model", help="Path to the model weights or name of a Hugging Face model.")
     infer_parser.add_argument(
         "-c",
         "--config_path",
@@ -567,19 +538,13 @@ def main():
         "--parquet_paths",
         nargs="+",
         required=True,
-        help="One or more directories or Parquet file paths for inference. Use a space-separated list for multiple paths."
+        help="One or more directories or Parquet file paths for inference. Use a space-separated list for multiple paths.",
     )
     infer_parser.add_argument(
-        "-d",
-        "--device",
-        help="Device to use for inference: 'mps', 'cpu', or 'gpu'.",
-        default=None
+        "-d", "--device", help="Device to use for inference: 'mps', 'cpu', or 'gpu'.", default=None
     )
     infer_parser.add_argument(
-        "-u",
-        "--mods_path",
-        help="Optional: Path to a file specifying modification settings.",
-        default=None
+        "-u", "--mods_path", help="Optional: Path to a file specifying modification settings.", default=None
     )
 
     args = parser.parse_args()
@@ -590,12 +555,14 @@ def main():
         return
 
     if args.mode == "convert":
-        convert_mode(config_path=args.config_path,
-                     spectra_paths=args.mzml_paths,
-                     search_paths=args.search_paths,
-                     fdr_paths=args.fdr_paths,
-                     output_directory=args.output_directory,
-                     mods_path=args.mods_path)
+        convert_mode(
+            config_path=args.config_path,
+            spectra_paths=args.mzml_paths,
+            search_paths=args.search_paths,
+            fdr_paths=args.fdr_paths,
+            output_directory=args.output_directory,
+            mods_path=args.mods_path,
+        )
     elif args.mode == "train":
         train_paths = get_parquet_paths(args.train_parquet_paths)
         if args.val_parquet_paths:
@@ -613,12 +580,20 @@ def main():
     elif args.mode == "infer":
         parquet_path = get_parquet_paths(args.parquet_path)
         infer_mode(
-            config_path=args.config_path, model_name_or_path=args.model, parquet_path=parquet_path, device=args.device, mods_path=args.mods_path
+            config_path=args.config_path,
+            model_name_or_path=args.model,
+            parquet_path=parquet_path,
+            device=args.device,
+            mods_path=args.mods_path,
         )
     elif args.mode == "validate":
         parquet_path = get_parquet_paths(args.parquet_path)
         validate_mode(
-            config_path=args.config_path, model_name_or_path=args.model, parquet_path=parquet_path, device=args.device, mods_path=args.mods_path
+            config_path=args.config_path,
+            model_name_or_path=args.model,
+            parquet_path=parquet_path,
+            device=args.device,
+            mods_path=args.mods_path,
         )
     elif args.mode == "tune":
         train_paths = get_parquet_paths(args.train_parquet_paths)

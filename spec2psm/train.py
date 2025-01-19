@@ -155,17 +155,20 @@ class Trainer:
         # Compute loss TODO swap this with a flag to do either regular ce loss or ce loss plus massdiff
         # loss = self.ce_loss(output_logits_flat, tgt_output_flat, weight_tensor=None)
 
-        predicted_masses = self.tokenizer.peptide_manager.detokenize_and_calculate_mass(tokenized_sequences=truncated_pred, charges=charge)
+        predicted_masses = self.tokenizer.peptide_manager.detokenize_and_calculate_mass(
+            tokenized_sequences=truncated_pred, charges=charge
+        )
 
         predicted_masses_tensor = torch.tensor(predicted_masses).to(self.device)
         loss = self.combined_loss(
-                predictions=output_logits_flat,
-                targets=tgt_output_flat,
-                precursor_masses=precursor_mass.to(self.device),
-                sequence_masses=predicted_masses_tensor,
-                weight_tensor=None,
-                cross_entropy_weight=0.5,
-                mass_accuracy_weight=0.5)
+            predictions=output_logits_flat,
+            targets=tgt_output_flat,
+            precursor_masses=precursor_mass.to(self.device),
+            sequence_masses=predicted_masses_tensor,
+            weight_tensor=None,
+            cross_entropy_weight=0.5,
+            mass_accuracy_weight=0.5,
+        )
 
         # Backpropagation
         loss.retain_grad()

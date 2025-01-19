@@ -107,13 +107,14 @@ class Mzml(BaseProteomicsFile):
             "precursor_mz": "precursor_mz_spectra",
             "charge": "charge_spectra",
             "scan_id": "scan_id",  # This one remains the same
-            "retention_time": "retention_time_spectra"
+            "retention_time": "retention_time_spectra",
         }
 
         # Rename columns
         self.data = self.data.rename(columns=rename_columns)
 
         self.data.to_parquet(output_filename, row_group_size=500, engine="pyarrow")
+
 
 class Mzid(BaseProteomicsFile):
 
