@@ -1,269 +1,381 @@
 import os
 import torch
 import torch.nn as nn
-from spec2psm.utils import truncate_sequences, truncate_after_eos
-from spec2psm.preprocess import TOKEN_TO_MASS
-from spec2psm.metrics import calculate_levenshtein, calculate_total_correct_sequences, calculate_aa_accuracy, plot_metrics
+from itertools import islice
+from spec2psm.metrics import Metrics
+import logging
 
-# TODO need to add test set validation every X batches...
-# TODO we would just pass two dataloaders I think, One train dataloader and one test dataloader
-def train_model(model, model_filename, train_dataloader, optimizer, scheduler, vocab_size, device, val_dataloader=None, num_epochs=1, weight_tensor=None, eos_token=26, pad_token=0, val_per_x_batches=100000, plot_per_x_batches=10000, tag="plot", output_directory=os.getcwd()):
-    model.train()  # Set the model to training mode
-    losses = []
-    per_residue_accuracies = []
-    sequence_accuracies = []
-    levenshtein_distances = []
-    train_metrics = {}
-    val_metrics = {
-        "training_batch": [],
-        "loss": [],
-        "per_residue_acc": [],
-        "sequence_acc": [],
-        "lev_dist": []
-    }
-    for epoch in range(num_epochs):
-        epoch_loss = 0
-        num_batches = 0
-        correct_per_residue = 0
-        total_residues = 0
-        correct_sequences = 0
-        total_sequences = 0
-        total_levenshtein_distance = 0
-
-        for batch in train_dataloader:
-            num_batches = num_batches + 1
-            src = batch[0].to(device)  # (batch_size, seq_len, 4) --> input spectra
-            tgt = batch[1].to(device)  # (batch_size, tgt_len) --> target peptide sequences
-            precursors = torch.stack([batch[2], batch[3]], dim=-1).to(device)
-            precursor_masses = batch[4]
-            precursor_masses = precursor_masses.clone().detach().float().to(device)
-
-            tgt_input = tgt[:, :-1]  # Teacher forcing: input is all but the last token
-            tgt_output = tgt[:, 1:]  # Expected output is all but the first token
-
-            # Padding masks and target masks
-            tgt_padding_mask = (tgt_input == 0)  # Mask out padding tokens in tgt
-            tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt_input.size(1)).to(device)
-
-            # Forward pass
-            output_logits = model(src, tgt_input, tgt_padding_mask, tgt_mask, precursors=precursors)
-
-            # Step 1: Get the predicted tokens
-            _, predicted = torch.max(output_logits, dim=-1)  # Shape: (batch_size, seq_len)
-
-            output_logits = output_logits.reshape(-1, vocab_size)
-            tgt_output_flat = tgt_output.reshape(-1)
-
-            # Convert to sequences for sequence-level accuracy and Levenshtein distance
-            predicted_seqs = predicted.view(-1, tgt_input.size(1)).tolist()
-            target_seqs = tgt[:, 1:].view(-1, tgt[:, 1:].size(1)).tolist()
-
-            truncated_sequences = truncate_sequences(predicted_seqs, eos_token)
-            truncated_target_sequences = truncate_sequences(target_seqs, eos_token)
-
-            # Calculate the mass for each sequence
-            sequence_masses = []
-
-            for sequence in truncated_sequences:
-                total_mass = 0
-                for token in sequence:
-                    if token in TOKEN_TO_MASS:
-                        total_mass += TOKEN_TO_MASS[token]
-                    else:
-                        pass
-                sequence_masses.append(total_mass)
-
-            # Compute loss (CrossEntropyLoss expects logits, not probabilities)
-            loss = combined_loss(output_logits, tgt_output_flat, precursor_masses, sequence_masses, weight_tensor)
-
-            # Reset gradients after updating
-            loss.retain_grad()
-            optimizer.zero_grad()
-
-            # Backpropagation
-            loss.backward()
-
-            # Step
-            optimizer.step()
-            scheduler.step()
-
-            epoch_loss += loss.item()
-
-            # Calculate sequence-level accuracy
-            # Fixed to use truncated sequences
-            correct_sequences += calculate_total_correct_sequences(truncated_sequences, truncated_target_sequences)
-            total_sequences += len(predicted_seqs)
-
-            # Calculate Levenshtein distance
-            total_levenshtein_distance += calculate_levenshtein(truncated_sequences, truncated_target_sequences)
-
-            # Calculate AA accuracy
-            cur_aa_matches, cur_aa_total = calculate_aa_accuracy(predicted=predicted, target=tgt_output, eos_token=eos_token, pad_token=pad_token)
-            correct_per_residue += cur_aa_matches
-            total_residues += cur_aa_total
-
-            avg_loss = epoch_loss / num_batches
-            per_residue_accuracy = correct_per_residue / total_residues if total_residues > 0 else 0.0
-            sequence_accuracy = correct_sequences / total_sequences if total_sequences > 0 else 0.0
-            avg_levenshtein_distance = total_levenshtein_distance / num_batches
-
-            print(f"Epoch {epoch + 1}, Batch {num_batches}, Loss: {avg_loss:.4f}, "
-                  f"Per-Residue Accuracy: {per_residue_accuracy:.4f}, "
-                  f"Sequence Accuracy: {sequence_accuracy:.4f}, "
-                  f"Levenshtein Distance: {avg_levenshtein_distance:.4f}")
-
-            # Append metrics for plotting
-            losses.append(avg_loss)
-            per_residue_accuracies.append(per_residue_accuracy)
-            sequence_accuracies.append(sequence_accuracy)
-            levenshtein_distances.append(avg_levenshtein_distance)
-
-            # Validate every X batches
-            if num_batches % val_per_x_batches == 0 and val_dataloader:
-                val_losses, val_per_residue_accuracies, val_sequence_accuracies, val_levenshtein_distances = validate_model(model=model, val_dataloader=val_dataloader, vocab_size=vocab_size, device=device, eos_token=eos_token, pad_token=pad_token, weight_tensor=weight_tensor)
-
-                val_metrics["training_batch"].append(num_batches)
-                val_metrics["loss"].append(val_losses)
-                val_metrics["per_residue_acc"].append(val_per_residue_accuracies)
-                val_metrics["sequence_acc"].append(val_sequence_accuracies)
-                val_metrics["lev_dist"].append(val_levenshtein_distances)
-
-            # Plot every X batches
-            if num_batches % plot_per_x_batches == 0:
-                train_metrics = {
-                    "loss": losses,
-                    "per_residue_acc": per_residue_accuracies,
-                    "sequence_acc": sequence_accuracies,
-                    "lev_dist": levenshtein_distances
-                }
-                pdf_filename = "{}.pdf".format(tag)
-                pdf_filepath = os.path.join(output_directory, pdf_filename)
-                plot_metrics(train_metrics=train_metrics, validation_metrics=val_metrics, filename=pdf_filepath)
+logger = logging.getLogger(__name__)
 
 
+class Trainer:
+    def __init__(
+        self,
+        model,
+        tokenizer,
+        train_dataloader,
+        optimizer,
+        device,
+        metric_window=100,
+        val_dataloader=None,
+        output_directory=os.getcwd(),
+        val_per_x_batches=100000,
+        plot_per_x_batches=10000,
+        tag="plot",
+    ):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.train_dataloader = train_dataloader
+        if optimizer:
+            self.optimizer = optimizer.optimizer
+            self.scheduler = optimizer.scheduler
+        else:
+            self.optimizer = None
+            self.scheduler = None
+        self.vocab_size = tokenizer.vocab_size
+        self.device = device
+        self.eos_token = tokenizer.eos_token
+        self.pad_token = tokenizer.pad_token
+        self.val_dataloader = val_dataloader
+        self.val_per_x_batches = val_per_x_batches
+        self.plot_per_x_batches = plot_per_x_batches
+        self.output_directory = output_directory
+        self.tag = tag
+        self.metrics = Metrics(tokenizer=self.tokenizer, metric_window=metric_window)
 
-        avg_epoch_loss = epoch_loss / num_batches
-        print(f"Epoch {epoch + 1}, Loss: {avg_epoch_loss:.4f}")
+    def train(self, num_epochs=1, model_filename="model.pth", checkpoint_per_x_batches=50_000, start_batch=0):
 
-    torch.save(model.state_dict(), model_filename)
-    return model, losses, per_residue_accuracies, sequence_accuracies, levenshtein_distances
+        # TODO wrap this with torch.profiler...
+        # TODO add the spec2psm_cli.py script to setup.py or .cfg not sure so that on install we can just call spec2psm... :)
+        # TODO upload models to huggingface hub and make sure thats working... I think do that with Small and then make sure inference and fine tuning works from that model in HF
+        # TODO fine-tune the spec2psm models on 20M more PSMs from my other dataset...
+        # TODO - Implement logic for parser cli tool
+        # TODO - Think of other todos...
+        # TODO make sure setting a mods.yaml file works... we can test this with the npgq param I think...
+        # TODO write the readme and make sure it works...
+        # TODO create the two inference modes, de novo and search bolstering mode
+        # TODO implement idXML parsing for peptides for training
 
-def validate_model(model, val_dataloader, vocab_size, device, eos_token, pad_token, weight_tensor=None):
-    model.eval()  # Set the model to evaluation mode
+        self.model.train()  # Set the model to training mode
 
-    val_loss = 0
-    num_batches = 0
-    correct_per_residue = 0
-    total_residues = 0
-    correct_sequences = 0
-    total_sequences = 0
-    total_levenshtein_distance = 0
+        for epoch in range(num_epochs):
+            epoch_loss = 0
+            num_batches = 0
 
-    val_losses = []
-    val_per_residue_accuracies = []
-    val_sequence_accuracies = []
-    val_levenshtein_distances = []
+            for num_batches, batch in enumerate(islice(self.train_dataloader, start_batch, None), start=start_batch):
+                # num_batches += 1
+                loss, cur_metrics = self._train_step(batch)
+                epoch_loss += loss
 
-    with torch.no_grad():  # Disable gradient calculation
-        for batch in val_dataloader:
-            num_batches += 1
+                # logger.info current metrics
+                logger.info(
+                    f"Epoch {epoch + 1}, Batch {num_batches}, Loss: {cur_metrics['train']['loss']:.4f}, "
+                    f"Per-Residue Accuracy: {cur_metrics['train']['per_residue_accuracy']:.4f}, "
+                    f"Sequence Accuracy: {cur_metrics['train']['sequence_accuracy']:.4f}, "
+                    f"Levenshtein Distance: {cur_metrics['train']['levenshtein_distance']:.4f}"
+                )
 
-            # Move batch data to device (GPU/CPU)
-            src = batch[0].to(device)  # Input spectra
-            tgt = batch[1].to(device)  # Target peptide sequences
-            precursors = torch.stack([batch[2], batch[3]], dim=-1).to(device)
-            precursor_masses = batch[4].clone().detach().float().to(device)
+                # Validate every X batches
+                if num_batches % self.val_per_x_batches == 0 and self.val_dataloader:
+                    self.validate(num_batches)
 
-            tgt_input = tgt[:, :-1]  # Teacher forcing: input is all but the last token
-            tgt_output = tgt[:, 1:]  # Expected output is all but the first token
+                # Plot every X batches
+                if num_batches % self.plot_per_x_batches == 0:
+                    self._plot_metrics()
 
-            # Padding masks and target masks
-            tgt_padding_mask = (tgt_input == 0)  # Mask out padding tokens in tgt
-            tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt_input.size(1)).to(device)
+                # Save every X batches
+                if num_batches % checkpoint_per_x_batches == 0:
+                    self.model.save_model(
+                        model_filename, iterations=num_batches, optimizer=self.optimizer, scheduler=self.scheduler
+                    )
 
-            # Forward pass
-            output_logits = model(src, tgt_input, tgt_padding_mask, tgt_mask, precursors=precursors)
+            avg_epoch_loss = epoch_loss / num_batches
+            logger.info(f"Epoch {epoch + 1}, Loss: {avg_epoch_loss:.4f}")
 
-            # Get the predicted tokens
-            _, predicted = torch.max(output_logits, dim=-1)
+        # Save the model - In the future add this to the batch loop above to add checkpointing ever X batches
+        # torch.save(self.model.state_dict(), model_filename
+        self.model.save_model(
+            model_filename, iterations=num_batches, optimizer=self.optimizer, scheduler=self.scheduler
+        )
+        return self.model
 
-            output_logits = output_logits.reshape(-1, vocab_size)
-            tgt_output_flat = tgt_output.reshape(-1)
+    def validate(self, training_batch):
+        self.model.eval()  # Set the model to evaluation mode
+        with torch.no_grad():
+            num_batches = 0
+            for batch in self.val_dataloader:
+                num_batches += 1
+                loss, cur_metrics = self._validate_step(batch)
 
-            # Convert to sequences for sequence-level accuracy and Levenshtein distance
-            predicted_seqs = predicted.view(-1, tgt_input.size(1)).tolist()
-            target_seqs = tgt[:, 1:].view(-1, tgt[:, 1:].size(1)).tolist()
+                logger.info(
+                    f"Train Batch {training_batch}, Val Batch {num_batches}, Loss: {cur_metrics['val']['loss']:.4f}, "
+                    f"Per-Residue Accuracy: {cur_metrics['val']['per_residue_accuracy']:.4f}, "
+                    f"Sequence Accuracy: {cur_metrics['val']['sequence_accuracy']:.4f}, "
+                    f"Levenshtein Distance: {cur_metrics['val']['levenshtein_distance']:.4f}"
+                )
 
-            truncated_sequences = truncate_sequences(predicted_seqs, eos_token)
-            truncated_target_sequences = truncate_sequences(target_seqs, eos_token)
+            # Optionally, compute and log averaged validation metrics across batches
+            avg_val_metrics = self.metrics.average_val_metrics()
+            logger.info(f"Validation Metrics at Batch {training_batch}: {avg_val_metrics}")
+        self.model.train()  # Set the model back to training mode
 
-            # Calculate the mass for each sequence
-            sequence_masses = []
-            for sequence in truncated_sequences:
-                total_mass = 0
-                for token in sequence:
-                    if token in TOKEN_TO_MASS:
-                        total_mass += TOKEN_TO_MASS[token]
-                    else:
-                        pass
-                sequence_masses.append(total_mass)
+    def _train_step(self, batch):
+        # Unpack batch
+        spectra, peptide, precursor_mass, charge, precursor_masses = batch
+        src = spectra.to(self.device)
+        tgt = peptide.to(self.device)
+        tgt_input = tgt[:, :-1]  # Teacher forcing: input is all but the last token
+        tgt_output = tgt[:, 1:]  # Expected output is all but the first token
+        target_seqs = tgt[:, 1:].view(-1, tgt[:, 1:].size(1)).tolist()
 
-            # Compute loss
-            loss = combined_loss(output_logits, tgt_output_flat, precursor_masses, sequence_masses, weight_tensor)
+        # Prepare precursors
+        precursors = torch.stack([precursor_mass, charge], dim=-1).to(self.device)
 
-            val_loss += loss.item()
+        # Padding masks and target masks
+        tgt_padding_mask = tgt_input == self.pad_token
+        tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt_input.size(1)).to(self.device)
 
-            # Calculate sequence-level accuracy
-            correct_sequences += calculate_total_correct_sequences(truncated_sequences, truncated_target_sequences)
-            total_sequences += len(predicted_seqs)
+        # Forward pass
+        output_logits = self.model(src, tgt_input, tgt_padding_mask, tgt_mask, precursors=precursors)
 
-            # Calculate Levenshtein distance
-            total_levenshtein_distance += calculate_levenshtein(truncated_sequences, truncated_target_sequences)
+        # Get the predicted sequence with greedy search
+        predicted = torch.argmax(output_logits, dim=-1)
 
-            # Calculate AA accuracy
-            cur_aa_matches, cur_aa_total = calculate_aa_accuracy(predicted=predicted, target=tgt_output, eos_token=eos_token, pad_token=pad_token)
-            correct_per_residue += cur_aa_matches
-            total_residues += cur_aa_total
+        # Reshape tgt and output for loss calculation
+        output_logits_flat = output_logits.reshape(-1, self.vocab_size)
+        tgt_output_flat = tgt_output.reshape(-1)
 
-            # Update validation metrics per batch
-            avg_val_loss = val_loss / num_batches
-            val_per_residue_accuracy = correct_per_residue / total_residues if total_residues > 0 else 0.0
-            val_sequence_accuracy = correct_sequences / total_sequences if total_sequences > 0 else 0.0
-            avg_val_levenshtein_distance = total_levenshtein_distance / num_batches
+        # Convert to sequences for sequence-level accuracy and Levenshtein distance
+        predicted_seqs = predicted.view(-1, tgt_input.size(1)).tolist()
 
-            # Append validation metrics for plotting
-            val_losses.append(avg_val_loss)
-            val_per_residue_accuracies.append(val_per_residue_accuracy)
-            val_sequence_accuracies.append(val_sequence_accuracy)
-            val_levenshtein_distances.append(avg_val_levenshtein_distance)
+        # Remove all tokens after stop tokens, for correct metric calculation
+        truncated_pred = Metrics.truncate_sequences(predicted_seqs, self.eos_token)
+        truncated_target = Metrics.truncate_sequences(target_seqs, self.eos_token)
 
-        # Average validation metrics for plotting
-        avg_val_loss_across_set = sum(val_losses) / len(val_losses)
-        avg_val_per_residue_accuracy_across_set = sum(val_per_residue_accuracies) / len(val_per_residue_accuracies)
-        avg_val_sequence_accuracy_across_set = sum(val_sequence_accuracies) / len(val_sequence_accuracies)
-        avg_val_levenshtein_distance_across_set = sum(val_levenshtein_distances) / len(val_levenshtein_distances)
+        # Compute loss TODO swap this with a flag to do either regular ce loss or ce loss plus massdiff
+        # loss = self.ce_loss(output_logits_flat, tgt_output_flat, weight_tensor=None)
 
+        predicted_masses = self.tokenizer.peptide_manager.detokenize_and_calculate_mass(tokenized_sequences=truncated_pred, charges=charge)
 
-    # Return validation metrics for plotting
-    return avg_val_loss_across_set, avg_val_per_residue_accuracy_across_set, avg_val_sequence_accuracy_across_set, avg_val_levenshtein_distance_across_set
+        predicted_masses_tensor = torch.tensor(predicted_masses).to(self.device)
+        loss = self.combined_loss(
+                predictions=output_logits_flat,
+                targets=tgt_output_flat,
+                precursor_masses=precursor_mass.to(self.device),
+                sequence_masses=predicted_masses_tensor,
+                weight_tensor=None,
+                cross_entropy_weight=0.5,
+                mass_accuracy_weight=0.5)
 
+        # Backpropagation
+        loss.retain_grad()
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        self.scheduler.step()
 
-def combined_loss(predictions, targets, precursor_masses, sequence_masses, weight_tensor=None, cross_entropy_weight=1.0, mass_accuracy_weight=0.0):
-    # Cross-entropy loss
-    # ce_loss = nn.CrossEntropyLoss(ignore_index=0, label_smoothing=0.1)(predictions, targets)
-    if weight_tensor is not None:
-        ce_loss = nn.CrossEntropyLoss(weight=weight_tensor, ignore_index=0, label_smoothing=0.1)(predictions, targets)
-    else:
-        ce_loss = nn.CrossEntropyLoss(ignore_index=0, label_smoothing=0.1)(predictions, targets)
+        # Metric calculations
+        sequence_accuracy = self.metrics.calculate_sequence_accuracy(truncated_pred, truncated_target)
+        levenshtein_distance = self.metrics.calculate_levenshtein(truncated_pred, truncated_target)
+        per_residue_accuracy = self.metrics.calculate_aa_accuracy(predicted, tgt_output)
 
-    # Mass accuracy loss (mean squared error)
-    precursor_masses_tensor = precursor_masses.view(-1)  # Ensure it's a 1D tensor
-    sequence_masses_tensor = torch.tensor(sequence_masses, dtype=torch.float32).to(targets.device)
+        self.metrics.add_train_metrics(
+            loss=loss.item(),
+            sequence_accuracy=sequence_accuracy,
+            levenshtein_distance=levenshtein_distance,
+            per_residue_accuracy=per_residue_accuracy,
+        )
 
-    # Calculate the mass accuracy loss
-    mass_accuracy_loss = torch.mean((precursor_masses_tensor - sequence_masses_tensor) ** 2)
+        cur_metrics = self.metrics.get_latest_ravg_metrics()
+        return loss.item(), cur_metrics
 
-    # Combine the losses
-    total_loss = (cross_entropy_weight * ce_loss) + (mass_accuracy_weight * mass_accuracy_loss)
+    def _validate_step(self, batch):
+        spectra, peptide, precursor_mass, charge, precursor_masses = batch
+        src = spectra.to(self.device)
+        tgt = peptide.to(self.device)  # This is used for the target ground truth
+        batch_size = src.size(0)
+        max_len = tgt.size(1)  # Maximum sequence length
 
-    return total_loss
+        # Prepare initial input tokens (start token)
+        generated_tokens = torch.full(
+            (batch_size, 1),
+            self.tokenizer.peptide_manager.token_map[self.tokenizer.peptide_manager.START_SYMBOL],
+            dtype=torch.long,
+        ).to(self.device)
+        eos_mask = torch.zeros(batch_size, dtype=torch.bool).to(self.device)  # Tracks sequences that reached eos
+
+        precursors = torch.stack([precursor_mass, charge], dim=-1).to(self.device)
+
+        # Autoregressive generation loop
+        for step in range(max_len - 1):
+            tgt_mask_step = nn.Transformer.generate_square_subsequent_mask(generated_tokens.size(1)).to(self.device)
+
+            # Get logits for the current step
+            output_logits = self.model(
+                src,
+                generated_tokens,
+                tgt_padding_mask=None,  # No padding mask for generated tokens
+                tgt_mask=tgt_mask_step,
+                precursors=precursors,
+            )
+
+            # Get the predicted tokens for this step
+            predicted_tokens = torch.argmax(output_logits[:, -1, :], dim=-1)  # Last token in the sequence
+
+            # Ensure EOS token is kept in the sequence, but pad after it
+            predicted_tokens[eos_mask] = self.pad_token  # Pad further predictions after EOS
+            eos_mask |= predicted_tokens == self.eos_token  # Update EOS mask for sequences reaching EOS
+
+            # Append the predicted tokens to the generated sequence
+            generated_tokens = torch.cat([generated_tokens, predicted_tokens.unsqueeze(1)], dim=1)
+
+            # Break if all sequences have reached EOS
+            if eos_mask.all():
+                break
+
+            # Pad all sequences to max_len if generation ended early
+        if generated_tokens.size(1) < max_len:
+            token_padding = torch.full(
+                (batch_size, max_len - generated_tokens.size(1)),
+                self.pad_token,
+                dtype=torch.long,
+                device=self.device,
+            )
+            # Pad the generated tokens and output logits so we can appropriately calculate metrics...
+            generated_tokens = torch.cat([generated_tokens, token_padding], dim=1)
+            padding_shape_logits = (output_logits.size(0), max_len - output_logits.size(1) - 1, output_logits.size(2))
+            padding_logits = torch.zeros(padding_shape_logits, device=output_logits.device)
+            output_logits = torch.cat([output_logits, padding_logits], dim=1)
+
+        # Calculate the loss
+        tgt_output = tgt[:, 1:]  # Remove start token from target
+        generated_tokens = generated_tokens[:, 1:]  # Remove start token from predictions
+
+        output_logits_flat = output_logits.reshape(-1, self.vocab_size)
+        tgt_output_flat = tgt_output.reshape(-1)
+        loss = self.ce_loss(output_logits_flat, tgt_output_flat, weight_tensor=None)
+
+        # Metrics calculation
+        truncated_pred = Metrics.truncate_sequences(generated_tokens.tolist(), self.eos_token)
+        truncated_target = Metrics.truncate_sequences(tgt_output.tolist(), self.eos_token)
+
+        sequence_accuracy = self.metrics.calculate_sequence_accuracy(truncated_pred, truncated_target)
+        levenshtein_distance = self.metrics.calculate_levenshtein(truncated_pred, truncated_target)
+        per_residue_accuracy = self.metrics.calculate_aa_accuracy(generated_tokens, tgt_output)
+
+        # Update validation metrics
+        self.metrics.add_val_metrics(
+            loss=loss.item(),
+            sequence_accuracy=sequence_accuracy,
+            levenshtein_distance=levenshtein_distance,
+            per_residue_accuracy=per_residue_accuracy,
+        )
+
+        # Fetch the latest rolling average metrics
+        cur_metrics = self.metrics.get_latest_metrics()
+
+        # Return loss and current metrics
+        return loss.item(), cur_metrics
+
+    # def _validate_step_autoregressive(self, batch):
+    #     spectra, peptide, precursor_mass, charge, precursor_masses = batch
+    #     src = spectra.to(self.device)
+    #
+    #     # This tgt is the ACTUAL peptide and not to be fed to the model, but used during metric calculations
+    #     tgt = peptide.to(self.device)
+    #     tgt_output = tgt[:, 1:]
+    #
+    #     precursors = torch.stack([precursor_mass, charge], dim=-1).to(self.device)
+    #
+    #     # Autoregressive generation
+    #     max_len = tgt.size(1)  # Maximum sequence length
+    #     batch_size = tgt.size(0)
+    #     total_loss = 0
+    #
+    #     # Start each generated sequence with the Start Token
+    #     generated = torch.full((batch_size, 1), self.tokenizer.peptide_manager.token_map[self.tokenizer.peptide_manager.START_SYMBOL], device=self.device, dtype=torch.long)
+    #
+    #     # Loop over the maximum possible peptide length
+    #     for t in range(max_len - 1):
+    #         tgt_padding_mask = (generated == self.pad_token)
+    #         tgt_mask = nn.Transformer.generate_square_subsequent_mask(generated.size(1)).to(self.device)
+    #
+    #         # Forward pass
+    #         output_logits = self.model(src, generated, tgt_padding_mask, tgt_mask, precursors=precursors)
+    #         next_token = torch.argmax(output_logits[:, -1, :], dim=-1, keepdim=True)  # Get the next token
+    #
+    #         # Compare against the next target token
+    #         target_token_flat = tgt[:, t + 1].reshape(-1)
+    #         output_logits_flat = output_logits[:, -1, :].reshape(-1, self.vocab_size)
+    #
+    #
+    #         # Compute loss for the current token
+    #         loss = self.ce_loss(output_logits_flat, target_token_flat)
+    #         total_loss += loss.item()
+    #
+    #         # Combine the next token with the already generated tokens
+    #         generated = torch.cat([generated, next_token], dim=1)
+    #
+    #         # Stop if all sequences have generated EOS
+    #         if (generated[:, -1] == self.eos_token).all():
+    #             break
+    #
+    #     # Truncate sequences after EOS
+    #     predicted_seqs = Metrics.truncate_sequences(generated.tolist(), self.eos_token)
+    #     target_seqs = Metrics.truncate_sequences(tgt_output.tolist(), self.eos_token)
+    #
+    #     # Calculate metrics
+    #     batch_metrics = {
+    #         "sequence_accuracy": self.metrics.calculate_sequence_accuracy(predicted_seqs, target_seqs),
+    #         "levenshtein_distance": self.metrics.calculate_levenshtein(predicted_seqs, target_seqs),
+    #         "per_residue_accuracy": self.metrics.calculate_aa_accuracy(generated, tgt_output),
+    #         "loss": total_loss / t
+    #     }
+
+    def ce_loss(self, predictions, targets, weight_tensor=None):
+        # Cross-entropy loss
+        if weight_tensor is not None:
+            ce_loss = nn.CrossEntropyLoss(weight=weight_tensor, ignore_index=0, label_smoothing=0.1)(
+                predictions, targets
+            )
+        else:
+            ce_loss = nn.CrossEntropyLoss(ignore_index=0, label_smoothing=0.1)(predictions, targets)
+
+        return ce_loss
+
+    def combined_loss(
+        self,
+        predictions,
+        targets,
+        precursor_masses,
+        sequence_masses,
+        weight_tensor=None,
+        cross_entropy_weight=1.0,
+        mass_accuracy_weight=0.0,
+    ):
+        # Cross-entropy loss
+        # ce_loss = nn.CrossEntropyLoss(ignore_index=0, label_smoothing=0.1)(predictions, targets)
+        if weight_tensor is not None:
+            ce_loss = nn.CrossEntropyLoss(weight=weight_tensor, ignore_index=0, label_smoothing=0.1)(
+                predictions, targets
+            )
+        else:
+            ce_loss = nn.CrossEntropyLoss(ignore_index=0, label_smoothing=0.1)(predictions, targets)
+
+        # Mass accuracy loss (mean squared error)
+        precursor_masses_tensor = precursor_masses.view(-1)  # Ensure it's a 1D tensor
+        # sequence_masses_tensor = torch.tensor(sequence_masses, dtype=torch.float32).to(targets.device)
+        sequence_masses_tensor = sequence_masses.clone().detach().to(targets.device)
+
+        # Calculate the mass accuracy loss
+        mass_accuracy_loss = torch.mean((precursor_masses_tensor - sequence_masses_tensor) ** 2)
+
+        # Combine the losses
+        total_loss = (cross_entropy_weight * ce_loss) + (mass_accuracy_weight * mass_accuracy_loss)
+
+        return total_loss
+
+    def _plot_metrics(self):
+        pdf_filename = f"{self.tag}.pdf"
+        pdf_filepath = os.path.join(self.output_directory, pdf_filename)
+        self.metrics.plot_metrics(filename=pdf_filepath)

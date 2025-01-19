@@ -2,15 +2,18 @@ import torch
 import pyarrow.parquet as pq
 import numpy as np
 from torch.utils.data import Dataset
-from spec2psm.preprocess import get_spec2psm_aa_mod_symbols, pad_with_zeros, tokenize_peptide
 from spectrum_utils.spectrum import MsmsSpectrum
+import logging
 
-PSM_TOKENS = get_spec2psm_aa_mod_symbols()
+logger = logging.getLogger(__name__)
+
 
 class Spec2PSMDataset(Dataset):
 
-    def __init__(self, file_paths, row_group_size=500, max_peptide_length=62, spectra_length=150, normalize=True):
+    def __init__(self, file_paths, tokenizer, row_group_size=500, swap_il=True, train=True):
+
         self.file_paths = file_paths
+        self.tokenizer = tokenizer
         self.row_group_size = row_group_size
         self.parquet_files = [pq.ParquetFile(file_path) for file_path in file_paths]
 
@@ -48,10 +51,9 @@ class Spec2PSMDataset(Dataset):
             cumulative_groups += num_row_groups
             self.cumulative_row_groups.append(cumulative_groups)
 
-        self.normalize = normalize
-        self.max_peptide_length = max_peptide_length
-        self.psm_tokens = get_spec2psm_aa_mod_symbols()
-        self.spectra_length = spectra_length
+        self.spectra_length = tokenizer.spectra_length
+        self.swap_il = swap_il
+        self.train = train
 
     def __len__(self):
         # Return the total number of rows across all files
@@ -67,9 +69,6 @@ class Spec2PSMDataset(Dataset):
     def __getitem__(self, idx):
         # Determine which file and row group to read from
         file_idx, row_group_idx, row_idx_within_group = self._get_file_and_row_group(idx)
-
-        # Calculate row index within the determined row group
-        #row_idx_within_group = idx % self.row_group_size
 
         # Read only the specific row group
         row_group = self.parquet_files[file_idx].read_row_group(row_group_idx)
@@ -100,14 +99,17 @@ class Spec2PSMDataset(Dataset):
         # TODO Future - Set the mz range and precursor peak to configurable params
         spectrum.set_mz_range(50, 2500)
         spectrum.remove_precursor_peak(2, "Da")
-        spectrum.filter_intensity(max_num_peaks = self.spectra_length)
+        spectrum.filter_intensity(max_num_peaks=self.spectra_length)
         spectrum.scale_intensity("root", 1)
 
         mz_transformed = spectrum.mz
         intensities_transformed = spectrum.intensity
 
+        # Pad with zeros if our intensty/mz values are not as long as the standard spectra length
         if len(intensities_transformed) < self.spectra_length:
-            intensities_transformed = np.concatenate((intensities_transformed, np.zeros(self.spectra_length - len(intensities_transformed))))
+            intensities_transformed = np.concatenate(
+                (intensities_transformed, np.zeros(self.spectra_length - len(intensities_transformed)))
+            )
             mz_transformed = np.concatenate((mz_transformed, np.zeros(self.spectra_length - len(mz_transformed))))
 
         # Convert to tensors
@@ -117,44 +119,60 @@ class Spec2PSMDataset(Dataset):
         precursor_mass = torch.tensor(row['precursor_mz_spectra'], dtype=torch.float32)
         charge = torch.tensor(row['charge_spectra'], dtype=torch.float32)
 
-        # Create a mask where intensity or mz is zero
-        mask = (intensities_transformed == 0) | (mz_transformed == 0)  # Use OR for masking
-
-        # Prepare precursor_mass and charge
-        precursor_mass_padded = np.where(mask, 0, precursor_mass)
-        charge_padded = np.where(mask, 0, charge)
-
-        # Pad precursor mass and charge to ensure they have length 100
-        # Only using this code if we are combining the precuror info with the sequence info
-        # precursor_mass_padded = pad_with_zeros(precursor_mass_padded, target_length=self.spectra_length)
-        # charge_padded = pad_with_zeros(charge_padded, target_length=self.spectra_length)
-        # features = torch.stack([mz_transformed, intensities_transformed,
-        #                         torch.tensor(precursor_mass_padded, dtype=torch.float32), torch.tensor(charge_padded, dtype=torch.float32)], dim=-1)
-
         features = torch.stack([mz_transformed, intensities_transformed], dim=-1)
 
-        # Extract target (Y) from the row
-        peptide = row['peptide_string_spec2psm']  # Assuming 'peptide_string_spec2psm' is the target column
+        if self.train:
+            peptide = row['peptide_string_spec2psm']
+            target = torch.tensor(self.tokenizer.tokenize_peptide(peptide), dtype=torch.long)
+            padded_target = torch.tensor(self.tokenizer.pad_sequence(target))
 
-        # Convert peptide sequence to a suitable representation, integer encoded
-        target = torch.tensor(tokenize_peptide(peptide, aa_mod_symbols=self.psm_tokens), dtype=torch.long)
-        # Pad the tokenized sequence to max peptide length
-        padded_target = torch.tensor(pad_with_zeros(target, target_length=self.max_peptide_length))
+            if self.tokenizer.token_map[self.tokenizer.peptide_manager.UNK_SYMBOL] in target:
+                logger.info("Found [UNK] symbol in {}".format(peptide))
 
-        # Convert the tensors to the correct types...
-        features_32 = features.clone().detach().float()
-        padded_target_long = padded_target.clone().detach().long()
+            tokenized_peptide = padded_target.clone().detach().long()
 
-        return features_32, padded_target_long, precursor_mass, charge, precursor_mass_spectra
+            if self.swap_il:
+                tokenized_peptide = self._swap_isoleucine_with_leucine(tokenized_peptide)
 
-    # def _get_file_and_row_group(self, idx):
-    #     # Determine which file contains the desired row group
-    #     cumulative_idx = 0
-    #     for i, cumulative_groups in enumerate(self.cumulative_row_groups):
-    #         if idx < cumulative_groups * self.row_group_size:
-    #             row_group_idx = (idx - cumulative_idx * self.row_group_size) // self.row_group_size
-    #             return i, row_group_idx
-    #         cumulative_idx = cumulative_groups
+            # tokenized_peptide = tokenized_peptide.clone().detach().long()
+
+            return features, tokenized_peptide, precursor_mass, charge, precursor_mass_spectra
+        else:
+            # Return only input features and metadata for inference
+            return features, precursor_mass, charge, precursor_mass_spectra
+
+        # # Convert peptide sequence to a suitable representation, integer encoded via tokenizer
+        # # TODO, try to maybe make Tokenizer a class???
+        # # TODO, then we can encapuslate the logic below...
+        # target = torch.tensor(self.tokenizer.tokenize_peptide(peptide), dtype=torch.long)
+        #
+        # # Pad the tokenized sequence to max peptide length
+        # padded_target = torch.tensor(self.tokenizer.pad_sequence(target))
+        #
+        # if self.tokenizer.token_map[self.tokenizer.peptide_manager.UNK_SYMBOL] in target:
+        #     logger.info("Found [UNK] symbol in {}".format(peptide))
+        #
+        # tokenized_peptide = padded_target.clone().detach().long()
+        #
+        # # Convert the tensors to the correct types...
+        # features_32 = features.clone().detach().float()
+        #
+        # if self.swap_il:
+        #     tokenized_peptide = self._swap_isoleucine_with_leucine(tokenized_peptide)
+        #
+        # return features_32, tokenized_peptide, precursor_mass, charge, precursor_mass_spectra
+
+    def _swap_isoleucine_with_leucine(self, tokenized_peptide):
+        # Check if ISOLEUCINE_TOKEN is present in the tensor before swapping
+        if (tokenized_peptide == self.tokenizer.peptide_manager.ISOLEUCINE_TOKEN).any():
+            # Only perform the swap if ISOLEUCINE_TOKEN is found
+            fixed_peptide_tensor = tokenized_peptide.clone()
+            fixed_peptide_tensor[tokenized_peptide == self.tokenizer.peptide_manager.ISOLEUCINE_TOKEN] = (
+                self.tokenizer.peptide_manager.LEUCINE_TOKEN
+            )
+            return fixed_peptide_tensor
+        else:
+            return tokenized_peptide
 
     def _get_file_and_row_group(self, idx):
         cumulative_start_idx = 0  # Keep track of the cumulative starting index for each file

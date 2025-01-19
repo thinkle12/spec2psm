@@ -9,3 +9,6 @@ levenshtein
 depthcharge-ms
 pyyaml
 sklearn
+huggingface_hub
+hydra-core
+omegaconf

@@ -1,22 +1,22 @@
-dataset:
-  max_peptide_length: 62
-  spectra_length: 150
-  row_group_size: 500
-  pad_token: 0
-  eos_token: 26
-  start_token: 25
+tokens:
+  max_peptide_length: 62 # Max length of peptides to be predicted
+  spectra_length: 150 # Max length of an input spectra
+  row_group_size: 500 # Parameter used for creating / reading parquet files
+  token_map_size: "medium" # Set to small, medium, or large - Each setting adds more or less modifications
 model:
-  batch_size: 32
-  d_model: 512
-  ff_dim: 1024
-  dropout: 0.1
-  nheads: 8
-  decoder_layers: 4
-  encoder_layers: 4
-  num_epochs: 5
-  device: mps
-optimizer:
-  lr: 1e-4
-  weight_decay: 1e-5
-  warmup_steps: 1000
-  total_model_steps: 30_000_000
+  batch_size: 32 # Batch size for training and validation
+  d_model: 512 # Transformer model dimension
+  ff_dim: 1024 # Feed forward model dimension for the encoder / decoder layers
+  dropout: 0.1 # Dropout percentage
+  nheads: 8 # Number of attention heads
+  decoder_layers: 4 # Number of decoder layers
+  encoder_layers: 4 # Number of encoder layers
+train:
+  lr: 1e-4 # Learning rate
+  weight_decay: 1e-5 # Weight decay
+  warmup_steps: 1000 # Number of warmup steps
+  total_model_steps: 30_000_000 # Total model steps (Used for the learning rate decay)
+  num_epochs: 10 # Number of epochs to train
+  metric_window: 100 # The window used for calculating rolling averages for metrics
+  plot_per_x_batches: 1000 # How many batches to update metric plots
+  val_per_x_batches: 250000 # How many batches to perform model validation

@@ -1,6 +1,6 @@
 import glob
 
-from setuptools import setup
+from setuptools import setup, find_packages
 
 with open("README.md", "r") as fh:
     long_description = fh.read()
@@ -10,7 +10,13 @@ setup(
     pbr=True,
     scripts=glob.glob("scripts/*.py"),
     name="spec2psm",
-    version="0.0.1",
+    version="0.1.0",
+    packages=find_packages(),
+    entry_points={
+        'console_scripts': [
+            'spec2psm=scripts.spec2psm_cli:main',
+        ],
+    },
     url="https://github.com/thinkle12/spec2psm",
     license="Apache-2",
     author="Trent Hinkle",

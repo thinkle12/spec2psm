@@ -1,0 +1,21 @@
+tokens:
+  token1:
+    unimod: "(UniMod:28)"
+    spec2psm: "npg"
+    mass: 123.123
+    massdiff: -17.026549
+    residue: n
+
+  token2:
+    unimod: "UniMod:5"
+    spec2psm: "Kcy_new"
+    mass: 150.150
+    massdiff: 50.50
+    residue: K
+
+  token3:
+    unimod: "UniMod:57"
+    spec2psm: "test"
+    mass: 200.200
+    massdiff: 60.60
+    residue: Y

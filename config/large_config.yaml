@@ -1,0 +1,22 @@
+tokens:
+  max_peptide_length: 62
+  spectra_length: 150
+  row_group_size: 500
+  token_map_size: "medium"
+model:
+  batch_size: 32
+  d_model: 512
+  ff_dim: 1024
+  dropout: 0.1
+  nheads: 8
+  decoder_layers: 8
+  encoder_layers: 8
+train:
+  lr: 1e-4
+  weight_decay: 5e-4
+  warmup_steps: 100_000
+  total_model_steps: 30_000_000
+  num_epochs: 1
+  metric_window: 100
+  plot_per_x_batches: 1000
+  val_per_x_batches: 250_000

@@ -3,16 +3,13 @@ import os
 import re
 import sys
 import xml.etree.ElementTree as ET
-from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pyopenms as ms
-from pyteomics import pepxml
+from pyteomics import pepxml, mzid
 from sklearn.model_selection import train_test_split
-
-from spec2psm.preprocess import UNIMOD_TO_SPEC2PSM
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +23,24 @@ logging.basicConfig(
 PROTON_MASS = 1.007276
 
 
-class Mzml(object):
+class BaseProteomicsFile(object):
+
+    def __init__(self):
+        pass
+
+
+class IdXML(BaseProteomicsFile):
+
+    def __init__(self, filepath):
+        self.filepath = filepath
+        self.data = None
+
+    def parse_ms2s(self):
+        # TODO implement idXML parsing
+        pass
+
+
+class Mzml(BaseProteomicsFile):
     def __init__(self, filepath):
         self.filepath = filepath
         self.data = None
@@ -69,16 +83,52 @@ class Mzml(object):
 
         self.data = data
 
+    def results_to_parquet(self, output_filename=None, directory=None):
 
-class Mzid(object):
+        # Handle if both or neither inputs are provided
+        if output_filename and directory:
+            raise ValueError("Please only either input an output filename OR a directory but not both.")
 
-    SPEC2PSM_REPLACE_PATTERN = re.compile("|".join(re.escape(key) for key in UNIMOD_TO_SPEC2PSM.keys()))
+        if not output_filename and not directory:
+            directory = os.getcwd()
 
-    def __init__(self, filepath):
+        if not output_filename:
+            # Get the filename from the spectra object file
+            output_filename = os.path.splitext(os.path.basename(self.data.filepath))[0]
+            output_filename = str(Path(output_filename).with_suffix(".parquet"))
+
+        if directory:
+            output_filename = os.path.join(directory, output_filename)
+
+        rename_columns = {
+            "mz": "mz",
+            "intensity": "intensity",
+            "precursor_mass": "precursor_mass_spectra",
+            "precursor_mz": "precursor_mz_spectra",
+            "charge": "charge_spectra",
+            "scan_id": "scan_id",  # This one remains the same
+            "retention_time": "retention_time_spectra"
+        }
+
+        # Rename columns
+        self.data = self.data.rename(columns=rename_columns)
+
+        self.data.to_parquet(output_filename, row_group_size=500, engine="pyarrow")
+
+class Mzid(BaseProteomicsFile):
+
+    def __init__(self, filepath, tokenizer):
         self.filepath = filepath
+        self.tokenizer = tokenizer
         self.data = None
         self.modifications = None
         self.search_params = None
+        self.unimod_replace_pattern = re.compile(
+            "|".join(re.escape(key) for key in self.tokenizer.peptide_manager.mass_unimod_map.keys())
+        )
+        self.spec2psm_replace_pattern = re.compile(
+            "|".join(re.escape(key) for key in self.tokenizer.peptide_manager.mod_map.keys())
+        )
 
     def parse_results(self):
         # Get list of precursor mass, charge, peptide, modifications, scan number, scan ID, retention time
@@ -128,13 +178,18 @@ class Mzid(object):
             if not scan_id:
                 scan_id = spectrum_reference.split("scan=")[-1]
                 scan_id = scan_id.split(" ")[0]
+                try:
+                    float(scan_id)
+                except:
+                    scan_id = spectrum_reference.split("index=")[-1]
+                    scan_id = scan_id.split(" ")[0]
             precursor_mz = spectrum.getMZ()
             retention_time = spectrum.getRT()
 
             # Loop over each psm hit
             for hit in spectrum.getHits():
                 rank = hit.getRank()
-                if rank != 1:
+                if rank > 1:
                     # Skip if not rank 1
                     continue
 
@@ -143,13 +198,15 @@ class Mzid(object):
                 peptide_string_unimod = peptide_sequence.toUniModString()  # Peptide sequence
                 charge = hit.getCharge()  # Peptide charge
                 hit_mz = hit.getSequence().getMonoWeight(ms.Residue.ResidueType.Full, hit.getCharge()) / hit.getCharge()
+                # hit_mz = peptide_sequence.getMZ(charge) # MZ
+                # hit_mass = peptide_sequence.getMonoWeight() # Full Mass
                 ppm = (abs(hit_mz - precursor_mz) / hit_mz) * 10**6
 
                 score = hit.getScore()
                 q_value = hit.getMetaValue("MS:1002054")
 
-                spec2psm_string = self.SPEC2PSM_REPLACE_PATTERN.sub(
-                    lambda x: UNIMOD_TO_SPEC2PSM[x.group()], peptide_string_unimod
+                spec2psm_string = self.spec2psm_replace_pattern.sub(
+                    lambda x: self.tokenizer.peptide_manager.mod_map[x.group()], peptide_string_unimod
                 )
 
                 peptide_info.append(
@@ -178,26 +235,20 @@ class Mzid(object):
         self.data = peptide_info
 
 
-class PepXML(object):
+class PepXML(BaseProteomicsFile):
 
-    # TODO
-    MASS_UNIMOD_MAP = {
-        "n[230]": ".(UniMod:737)",  # TMT6Plex
-        "C[228]": "C(UniMod:108)",  # Nethylmaleimide
-        "K[357]": "K(UniMod:737)",  # TMT6Plex
-        "M[147]": "M(UniMod:35)",  # Oxidation
-        "Y[392]": "Y(UniMod:737)",  # TMT6Plex
-    }
-
-    UNIMOD_REPLACE_PATTERN = re.compile("|".join(re.escape(key) for key in MASS_UNIMOD_MAP.keys()))
-
-    SPEC2PSM_REPLACE_PATTERN = re.compile("|".join(re.escape(key) for key in UNIMOD_TO_SPEC2PSM.keys()))
-
-    def __init__(self, filepath):
+    def __init__(self, filepath, tokenizer):
         self.filepath = filepath
+        self.tokenizer = tokenizer
         self.data = None
         self.modifications = None
         self.search_params = None
+        self.unimod_replace_pattern = re.compile(
+            "|".join(re.escape(key) for key in self.tokenizer.peptide_manager.mass_unimod_map.keys())
+        )
+        self.spec2psm_replace_pattern = re.compile(
+            "|".join(re.escape(key) for key in self.tokenizer.peptide_manager.mod_map.keys())
+        )
 
     def parse_results(self):
         # Get list of precursor mass, charge, peptide, modifications, scan number, scan ID, retention time
@@ -254,16 +305,20 @@ class PepXML(object):
                 # That way we can convert the AA+static mod to a new symbol for the model
                 # I.e. C isnt the same as C[57]
                 # The masses are added automatically for variable and term mods but not static mods
-                for name, mass in static_mod_dict.items():
-                    modified_peptide = modified_peptide.replace(name, f"{name}[{mass}]")
+                for aa, mass in static_mod_dict.items():
+                    # modified_peptide = modified_peptide.replace(aa, f"{aa}[{mass}]")
+                    # Regular expression to find any 'C' not followed by [160]
+                    pattern = rf"(?<={aa})(?!\[{mass}\])"
+                    # Replace matches with the modified version
+                    modified_peptide = re.sub(pattern, f"[{mass}]", modified_peptide)
 
                 # Create unimod string and spec2psm string
-                unimod_string = self.UNIMOD_REPLACE_PATTERN.sub(
-                    lambda x: self.MASS_UNIMOD_MAP[x.group()], modified_peptide
+                unimod_string = self.unimod_replace_pattern.sub(
+                    lambda x: self.tokenizer.peptide_manager.mass_unimod_map[x.group()], modified_peptide
                 )
 
-                spec2psm_string = self.SPEC2PSM_REPLACE_PATTERN.sub(
-                    lambda x: UNIMOD_TO_SPEC2PSM[x.group()], unimod_string
+                spec2psm_string = self.spec2psm_replace_pattern.sub(
+                    lambda x: self.tokenizer.peptide_manager.mod_map[x.group()], unimod_string
                 )
 
                 peptide_info.append(
@@ -400,6 +455,9 @@ class SpectraToSearchMap(object):
                 mapped_results = mapped_results[mapped_results['q_value'] <= q_value_threshold]
                 logger.info("Filtering by Q Value")
                 logger.info("Number of results after Q Value filtering: {}".format(len(mapped_results)))
+        else:
+            if pd.api.types.is_float_dtype(mapped_results["q_value"]):
+                mapped_results = mapped_results[mapped_results['q_value'] <= q_value_threshold]
 
         # Remove non-essential columns
         final_df = mapped_results[
@@ -468,7 +526,7 @@ class SpectraToSearchMap(object):
 
         except ValueError:
             # Column is not floatable
-            print(f"Column q_value is not floatable.")
+            logger.info(f"Column q_value is not floatable.")
             len_filtered = len(self.data)
 
         self.search_object.search_params["num_psms"] = len(self.data)
@@ -525,28 +583,14 @@ class Parquet(object):
         parquet_df = pd.read_parquet(self.filepath)
 
         # First, split the data into 90% train and 10% temporary (dev + test)
-        train_df, temp_df = train_test_split(parquet_df, test_size=1-train_percent, random_state=42)
+        train_df, temp_df = train_test_split(parquet_df, test_size=1 - train_percent, random_state=42)
 
         # Then, split the temporary set into 5% dev and 5% test
         dev_df, test_df = train_test_split(temp_df, test_size=0.5, random_state=42)
 
         # Check the sizes of the splits
-        print(f"Train set: {len(train_df)}, Dev set: {len(dev_df)}, Test set: {len(test_df)}")
+        logger.info(f"Train set: {len(train_df)}, Dev set: {len(dev_df)}, Test set: {len(test_df)}")
 
         train_df.to_parquet(self.train_filepath, row_group_size=500, engine="pyarrow")
         dev_df.to_parquet(self.dev_filepath, row_group_size=500, engine="pyarrow")
         test_df.to_parquet(self.test_filepath, row_group_size=500, engine="pyarrow")
-
-
-
-# The goal of ModHandler is to transform peptides to contain msfragger like modifications for both static and variable mods
-# I.e. PEPTI[123]DE where T has a static mod of 57 should be output like
-# PEPT[57]I[123]DE - We should really distinguish between static and var mods I think tho... Maybe (57) instead
-class ModHandler(object):
-    def __init__(self, modifications, peptide, algorithm="msfragger"):
-        self.modifications = modifications
-        self.peptide = peptide
-        self.algorithm = algorithm
-
-    def correct_mod(self):
-        pass
